@@ -112,6 +112,7 @@ const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 	web_search: path.join(EXT_BASE, "web-search", "index.ts"),
 	web_fetch: path.join(EXT_BASE, "web-fetch", "index.ts"),
 	safe_bash: path.join(TOOLS_DIR, "safe-bash.ts"),
+	ast_grep: path.join(TOOLS_DIR, "ast-grep.ts"),
 	video_extract: path.join(EXT_BASE, "video-extract", "index.ts"),
 	youtube_search: path.join(EXT_BASE, "youtube-search", "index.ts"),
 	google_image_search: path.join(EXT_BASE, "google-image-search", "index.ts"),
@@ -211,6 +212,8 @@ export function formatToolPreview(name: string, args: Record<string, unknown>): 
 			return `search "${(args.query as string) || ""}"`;
 		case "web_fetch":
 			return `fetch ${(args.url as string) || ""}`;
+		case "ast_grep":
+			return `sg ${(args.pattern as string) || (args.rule as string) || ""}`;
 		default: {
 			const s = JSON.stringify(args);
 			return `${name} ${s.slice(0, 60)}`;

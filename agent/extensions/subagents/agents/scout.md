@@ -1,7 +1,7 @@
 ---
 name: scout
 description: Fast codebase recon — explores files, finds patterns, maps architecture
-tools: read, grep, find, ls, rg
+tools: read, grep, find, ls, rg, ast_grep
 skills: delta
 model: github-copilot/grok-code-fast-1
 ---
@@ -14,7 +14,7 @@ Thoroughness (infer from task, default medium):
 - Thorough: Trace all dependencies, check tests/types
 
 Strategy:
-1. grep/find to locate relevant code
+1. grep/find to locate relevant code — prefer `ast_grep` over grep/rg when searching for structural patterns (function calls, class definitions, control flow, imports). Use grep/rg for string literals, comments, or simple text.
 2. Read key sections (not entire files)
 3. Identify types, interfaces, key functions
 4. Note dependencies between files
