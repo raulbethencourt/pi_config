@@ -1,13 +1,8 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
-// Tools the orchestrator must NOT use directly — must delegate to subagents
-const BLOCKED_TOOLS = new Set([
-	"read", "write", "edit", "bash", "safe_bash", "grep", "find", "ls",
-]);
-
-// Tools the orchestrator CAN use directly
+// Only these tools are allowed for the orchestrator — everything else is blocked
 const ALLOWED_TOOLS = new Set([
-	"subagent", "ask_user_question", "web_search", "web_fetch",
+	"subagent", "ask_user_question",
 ]);
 
 const AVAILABLE_AGENTS = [
@@ -28,8 +23,8 @@ export default function (pi: ExtensionAPI) {
 
 		const toolName = event.toolName;
 
-		// Allow explicitly allowed tools and anything not in the blocked list (MCP tools, etc.)
-		if (ALLOWED_TOOLS.has(toolName) || !BLOCKED_TOOLS.has(toolName)) {
+		// Only allow explicitly allowed tools — block everything else
+		if (ALLOWED_TOOLS.has(toolName)) {
 			return undefined;
 		}
 

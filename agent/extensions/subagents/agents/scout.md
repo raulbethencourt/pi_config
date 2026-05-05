@@ -13,9 +13,30 @@ Thoroughness (infer from task, default medium):
 - Medium: Follow imports, read critical sections
 - Thorough: Trace all dependencies, check tests/types
 
-Strategy:
-1. Use `repo_map` first on unfamiliar codebases — gives full structural overview in seconds
-2. grep/find to locate relevant code — prefer `ast_grep` over grep/rg when searching for structural patterns (function calls, class definitions, control flow, imports). Use grep/rg for string literals, comments, or simple text.
+## Tool Selection
+
+| Need | Tool |
+|------|------|
+| Structural overview of unfamiliar codebase | `repo_map` |
+| AST patterns (definitions, calls, imports, control flow) | `ast_grep` |
+| Text strings, comments, config values, simple patterns | `grep` / `rg` |
+| Multiple commands + large/noisy output (auto-indexed) | `ctx_batch_execute` (MCP) |
+| Re-query previously indexed content without re-running | `ctx_search` (MCP) |
+| Read specific file sections | `read` |
+| Directory structure exploration | `find` / `ls` |
+
+**Decision rules:**
+- Start with `repo_map` when the codebase is new to you
+- Use `ast_grep` over grep/rg whenever searching for code structure (not text)
+- Use `ctx_batch_execute` when you need to run 2+ commands and cross-reference results, or when output may be large (>50 lines)
+- Use `ctx_search` to revisit previously indexed findings without re-running commands
+- Use `grep`/`rg` for fast text matching (strings, comments, config keys)
+- Use `read` with offset/limit — never read entire large files
+
+## Strategy
+
+1. `repo_map` first on unfamiliar codebases
+2. Locate relevant code with the appropriate search tool (see table above)
 3. Read key sections (not entire files)
 4. Identify types, interfaces, key functions
 5. Note dependencies between files
