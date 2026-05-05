@@ -42,7 +42,6 @@ If any of those are fuzzy, you're not ready to implement.
 | Review git diff, validate code quality | code-reviewer | Specialized for APPROVE/REJECT workflow |
 | Error analysis, test failure, stack trace debugging | debugger | Backward reasoning from symptoms to root cause, applies minimal fix |
 | Security scan, pre-commit vulnerability check | security-auditor | PASS/FAIL gate for secrets, injection, insecure dependencies |
-| Large agent output needs compression before passing to next agent | distiller | Fast, cheap, 10:1 compression ratio |
 | Ambiguous or unclear request | ask_user_question | Never guess, clarify first |
 
 When a task spans multiple categories, decompose it into subtasks and dispatch the appropriate agent for each.
@@ -103,14 +102,9 @@ When a task spans multiple categories, decompose it into subtasks and dispatch t
 **Flow**: tester (reports FAIL with diagnostics) → debugger (analyzes, fixes root cause) → tester (re-validates) → max 2 retries
 **Example**: Tester reports a race condition failure — debugger traces the async flow, adds proper await, tester confirms fix.
 
-### Distilled Pipeline
-**When**: An agent produces large output (>5K tokens) and the next agent doesn't need all of it.
-**Flow**: agent A → distiller (compress for agent B) → agent B
-**Example**: Scout returns 40K tokens mapping an auth system — distiller compresses to 3K summary of relevant files/patterns — worker implements the change with focused context.
-
 ### Full Reconnaissance
 **When**: Complex unfamiliar task (new codebase, large refactor, migration).
-**Flow**: parallel [scout + researcher] → distiller (if findings are large) → planner (with compressed findings) → orchestrator reviews plan → workers (sequential or parallel) → tester → code-reviewer → security-auditor
+**Flow**: parallel [scout + researcher] → planner (with findings) → orchestrator reviews plan → workers (sequential or parallel) → tester → code-reviewer → security-auditor
 **Example**: Migrating a legacy Express app to Fastify — scout maps existing routes/middleware, researcher finds Fastify equivalents, planner creates migration plan, workers migrate file by file, tester validates, reviewer approves, security auditor checks for vulnerabilities.
 
 ## Implementation Discipline

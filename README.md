@@ -44,7 +44,6 @@ Specialized work is delegated to subagents via the `subagent` tool.
             │   ├── security-auditor.md
             │   ├── doc-writer.md
             │   ├── code-reviewer.md
-            │   ├── distiller.md
             │   └── sugar-tester.md
             └── tools/           # Custom tools loaded into subagent processes
                 ├── safe-bash.ts
@@ -68,7 +67,7 @@ Specialized work is delegated to subagents via the `subagent` tool.
 
 ## Agents
 
-12 built-in agents. Each is defined by a `.md` file in `agent/extensions/subagents/agents/` — YAML frontmatter for config, body for system prompt.
+11 built-in agents. Each is defined by a `.md` file in `agent/extensions/subagents/agents/` — YAML frontmatter for config, body for system prompt.
 
 | Agent | Purpose | Model |
 |-------|---------|-------|
@@ -82,7 +81,6 @@ Specialized work is delegated to subagents via the `subagent` tool.
 | **security-auditor** | Scans for vulnerabilities, secrets, insecure dependencies | claude-sonnet-4.6 |
 | **doc-writer** | Generates/updates docs, READMEs, changelogs | claude-sonnet-4.6 |
 | **code-reviewer** | Expert review of git commits | claude-opus-4.6 |
-| **distiller** | Compresses large agent outputs into compact summaries | grok-code-fast-1 |
 | **sugar-tester** | SugarCRM-specific testing (bns curl E2E, PHPUnit, scheduler) | (default) |
 
 **Tools by agent:**
@@ -99,7 +97,6 @@ Specialized work is delegated to subagents via the `subagent` tool.
 | security-auditor | read, grep, find, safe_bash, ast_grep | — |
 | doc-writer | read, write, edit, grep, find, ls | stop-slop, translation |
 | code-reviewer | read, grep, find, ls, rg | delta |
-| distiller | read | — |
 | sugar-tester | read, write, edit, safe_bash | sugarcrm-testing |
 
 ---
@@ -180,12 +177,6 @@ Then pass scout's output directly into worker's task context.
 
 ```json
 { "agent": "scout", "task": "Use repo_map on /path/to/project, then identify the main entry points and explain the module boundaries" }
-```
-
-**Compress a large agent result:**
-
-```json
-{ "agent": "distiller", "task": "Summarize this output to 200 words, focusing on actionable findings:\n\n<paste output>" }
 ```
 
 ---

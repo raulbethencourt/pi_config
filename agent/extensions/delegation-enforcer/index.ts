@@ -7,7 +7,7 @@ const ALLOWED_TOOLS = new Set([
 
 const AVAILABLE_AGENTS = [
 	"scout", "researcher", "planner", "worker", "tester",
-	"debugger", "security-auditor", "doc-writer", "refactorer", "codereviewer", "distiller",
+	"debugger", "security-auditor", "doc-writer", "refactorer", "codereviewer",
 ];
 
 export default function (pi: ExtensionAPI) {

@@ -10,7 +10,6 @@
 | **researcher** | claude-opus-4.6 | web_search, web_fetch | Web research specialist. Searches, fetches sources, synthesizes into sourced briefs. |
 | **worker** | claude-sonnet-4.6 | read, write, edit, safe_bash | Isolated code executor. Reads before editing, makes targeted changes, verifies with commands. |
 | **code-reviewer** | claude-sonnet-4-5 | read, grep, find, ls, rg | Git commit reviewer. APPROVE/REJECT with categorized issues (Critical/Important/Minor). |
-| **distiller** | grok-code-fast-1 | read | Context compressor. Reduces large agent outputs to compact targeted summaries (10:1 ratio). |
 
 ## Current Orchestration
 
@@ -195,16 +194,6 @@ Before adding new agents, optimize the existing team and build supporting infras
 - **Implementation**: Stripped Delegation Policy section from `orchestrator/SKILL.md`, kept Agent Selection, Task Decomposition, and Implementation Discipline. Added note referencing the extension.
 - **Status**: [x] Complete
 
-#### 🗜️ Context Distiller Agent
-
-- **Goal**: Compress large agent outputs before passing to next agent in pipeline
-- **Implementation**: Created `~/.pi/agent/extensions/subagents/agents/distiller.md`
-  - Uses grok-code-fast-1 (fast, cheap — haiku-4.5 not supported on github-copilot)
-  - 10:1 compression target
-  - Added Distilled Pipeline pattern to orchestrator skill
-  - Added distiller to Agent Selection table
-- **Status**: [x] Complete
-
 ### Phase 5: Quality & Maintenance
 
 #### 🧪 Test Coverage for All TypeScript Files
@@ -345,8 +334,7 @@ Before adding new agents, optimize the existing team and build supporting infras
 - **2026-05-03**: Phase 5.1 complete — 165 tests across 10 suites (bash-guard, safe-bash, notify, zsh-history, context-info, subagents utils, review, ask-user-question, btw, powerline). Infrastructure: vitest + tsconfig + package.json. Added exports to ~40 pure functions. Found regex bug in safe-bash (rm -rf ~ not caught). 4 UI-heavy files skipped (clear-screen, persistent-cwd, web-search, web-fetch).
 - **2026-05-03**: Added Phase 6 — research-driven improvements (tree-sitter repo map, ast-grep, persistent memory, shared workspace, MCTS-lite, observability). Created RESEARCH_AGENTIC_WORKFLOWS.md.
 - **2026-05-03**: Added Phase 5
-- **2026-05-03**: Final validation — distiller model fixed (haiku→grok), delegation enforcer confirmed working (blocks orchestrator direct tool use), context-mode confirmed working in MCP and subagents. All systems operational.
-- **2026-05-03**: Added distiller agent (context compression), Distilled Pipeline pattern in orchestrator skill, updated evolution plan.
+- **2026-05-03**: Final validation — delegation enforcer confirmed working (blocks orchestrator direct tool use), context-mode confirmed working in MCP and subagents. All systems operational.
 - **2026-05-03**: Plan audit — fixed Tools & Skills status, corrected model assignments (gpt-5.1-codex → gpt-5.3-codex), documented delegation-enforcer extension, context-mode integration, and orchestrator skill cleanup.
 - **2026-05-02**: Phase 4 complete — model audit done, tools/skills audit done with skills support in subagents extension, compact agent dashboard widget built.
 - **2026-05-02**: Phase 4.1 complete — model selection audit done. Upgraded planner/debugger/code-reviewer to claude-opus-4.6, worker/tester/refactorer to gpt-5.1-codex.
