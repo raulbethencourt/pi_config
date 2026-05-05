@@ -237,17 +237,23 @@ Before adding new agents, optimize the existing team and build supporting infras
 
 > Based on research synthesis: see [RESEARCH_AGENTIC_WORKFLOWS.md](./RESEARCH_AGENTIC_WORKFLOWS.md)
 
+#### 🧪 SugarCRM Testing Skill
+
+- **Goal**: Dedicated skill for writing and running tests across three SugarCRM frameworks — PHPUnit unit/integration tests, bns end-to-end curl tests, and bns scheduler batch tests
+- **Implementation**: Created `skills/sugarcrm-testing/SKILL.md` covering all three test types with format examples, naming conventions, variable references, and test creation workflow. Added skill to tester agent.
+- **Status**: [x] Complete
+
 #### 🌳 Tree-sitter Repo Map
 
 - **Goal**: Build Aider-style structural codebase maps for scout/planner — fits entire repo in ~2K tokens
-- **Implementation**: `web-tree-sitter` npm package, pi extension or MCP server
-- **Status**: [ ] Pending
+- **Implementation**: Created `subagents/tools/repo-map.ts` extension using ast-grep (tree-sitter under the hood) with `--inline-rules` to extract definition kinds (function_declaration, class_declaration, interface_declaration, type_alias_declaration, enum_declaration, method_definition). JSON stream output piped to inline Node.js formatter that groups by file, sorts, and trims to token budget. Added to scout and planner agents.
+- **Status**: [x] Complete
 
 #### 🔍 ast-grep Integration
 
 - **Goal**: Add AST-based structural code search/replace as a tool for scout, refactorer, security-auditor
-- **Implementation**: `pacman -S ast-grep`, add as agent tool
-- **Status**: [ ] Pending
+- **Implementation**: Installed `ast-grep` system-wide (`/usr/bin/sg`). Created custom tool extension `tools/ast-grep.ts` with pattern/lang/paths/rule/format params. Registered in CUSTOM_TOOL_EXTENSIONS. Added `ast_grep` tool to scout, planner, debugger, refactorer, and security-auditor agents.
+- **Status**: [x] Complete
 
 #### 🧠 Persistent Memory (Three-Tier)
 
@@ -269,8 +275,37 @@ Before adding new agents, optimize the existing team and build supporting infras
 
 #### 📊 Observability & Token Analytics
 
-- **Goal**: Structured logging of all LLM calls + local SQLite analytics
-- **Implementation**: Pi extension with `{model, tokens, latency, task_id}` logging
+- **Goal**: Persistent token/cost tracking across all sessions. Answer: "How much did I spend this week?", "Which agent is most expensive?", "What's my cost trend?"
+- **Approach**: Option B — hook into `subagents/index.ts` after `runSubagent()` returns (usage data already parsed there)
+- **Implementation**:
+  1. SQLite DB at `~/.pi/data/analytics.db` with schema:
+     ```sql
+     CREATE TABLE runs (
+       id INTEGER PRIMARY KEY,
+       timestamp TEXT,        -- ISO 8601
+       session_id TEXT,       -- pi session identifier
+       agent TEXT,            -- worker, scout, planner...
+       model TEXT,            -- which model was used
+       task_summary TEXT,     -- first 200 chars of task
+       input_tokens INTEGER,
+       output_tokens INTEGER,
+       cache_read INTEGER,
+       cache_write INTEGER,
+       cost_usd REAL,
+       turns INTEGER,
+       duration_ms INTEGER,
+       exit_code INTEGER,     -- 0 = success, non-zero = failure
+       cwd TEXT               -- project directory
+     );
+     ```
+  2. ~20 lines added to subagents/index.ts: after each run completes, INSERT row with usage
+  3. New tool `token_stats` (in `subagents/tools/token-stats.ts`) that queries the DB:
+     - `--today` → today's cost + tokens
+     - `--week` → this week breakdown by agent
+     - `--agent <name>` → specific agent history
+     - `--project <path>` → per-project spending
+     - `--expensive <N>` → top N most expensive runs
+  4. Optional later: HTML dashboard (ctx-insight style)
 - **Status**: [ ] Pending
 
 ## Future Patterns to Explore
@@ -303,6 +338,9 @@ Before adding new agents, optimize the existing team and build supporting infras
 
 ## Changelog
 
+- **2026-05-05**: Phase 6 — Tree-sitter Repo Map complete. Created `subagents/tools/repo-map.ts` using ast-grep definition extraction + Node.js formatter. Added `repo_map` tool to scout and planner agents.
+- **2026-05-05**: Phase 6 — SugarCRM testing skill created. Covers PHPUnit, bns curl E2E, and bns scheduler tests. Added to tester agent.
+- **2026-05-04**: Phase 6 — ast-grep integration complete. Created `tools/ast-grep.ts` extension, registered in CUSTOM_TOOL_EXTENSIONS, added to 5 agents (scout, planner, debugger, refactorer, security-auditor).
 - **2026-05-03**: Phase 5.2 complete — refactoring pass: extracted `shared/format.ts` (formatTokens, formatDuration) and `shared/content.ts` (extractTextContent, extractAssistantText), deduplicated review.ts searchable selectors via generic `showSearchableSelector<T>`, replaced `any` with `ExtensionContext` in bash-guard, removed dead `Component` type from subagents. All consumers use re-exports for backward compatibility. 173 tests passing.
 - **2026-05-03**: Phase 5.1 complete — 165 tests across 10 suites (bash-guard, safe-bash, notify, zsh-history, context-info, subagents utils, review, ask-user-question, btw, powerline). Infrastructure: vitest + tsconfig + package.json. Added exports to ~40 pure functions. Found regex bug in safe-bash (rm -rf ~ not caught). 4 UI-heavy files skipped (clear-screen, persistent-cwd, web-search, web-fetch).
 - **2026-05-03**: Added Phase 6 — research-driven improvements (tree-sitter repo map, ast-grep, persistent memory, shared workspace, MCTS-lite, observability). Created RESEARCH_AGENTIC_WORKFLOWS.md.
