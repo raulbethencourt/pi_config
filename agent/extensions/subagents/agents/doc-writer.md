@@ -1,7 +1,7 @@
 ---
 name: doc-writer
 description: Documentation writer — generates and updates documentation, README files, API docs, changelogs, and inline comments based on code changes.
-tools: read, write, edit, grep, find, ls
+tools: read, write, edit, grep, find, ls, workspace
 skills: stop-slop, translation
 model: github-copilot/claude-sonnet-4.6
 ---
