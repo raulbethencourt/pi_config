@@ -1,12 +1,19 @@
-# Minimal Subagents
+# Subagents
 
-A pi extension that registers a single `subagent` tool with three agents:
+A pi extension that registers a single `subagent` tool with ten agents:
 
 | Agent | Tools | Model | Purpose |
 |-------|-------|-------|---------|
-| **scout** | read, grep, find, ls | claude-haiku-4-5 | Fast codebase recon |
-| **researcher** | web_search, web_fetch | claude-sonnet-4-6 | Web research |
-| **worker** | read, write, edit, safe_bash | claude-sonnet-4-6 | Code changes |
+| **scout** | read, grep, find, ls, rg, ast_grep, repo_map | grok-code-fast-1 | Fast codebase recon |
+| **researcher** | web_search, web_fetch | claude-opus-4.6 | Web research |
+| **planner** | read, grep, find, ls, ast_grep, repo_map, workspace | claude-opus-4.6 | Architecture planning |
+| **worker** | read, write, edit, safe_bash, workspace | gpt-5.3-codex | Code changes |
+| **tester** | read, write, edit, safe_bash, workspace | gpt-5.3-codex | Test writing & execution |
+| **debugger** | read, grep, find, safe_bash, ast_grep, workspace | claude-opus-4.6 | Root cause analysis |
+| **security-auditor** | read, grep, find, safe_bash, ast_grep, workspace | claude-sonnet-4.6 | Security scanning |
+| **code-reviewer** | read, grep, find, ls, rg, workspace | claude-opus-4.6 | Git commit review |
+| **doc-writer** | read, write, edit, grep, find, ls, workspace | claude-sonnet-4.6 | Documentation |
+| **refactorer** | read, write, edit, grep, find, ls, safe_bash, ast_grep, workspace | gpt-5.3-codex | Code quality improvement |
 
 ## Usage
 
@@ -31,6 +38,42 @@ Optional `config.json` next to `index.ts`:
 
 ```json
 { "maxConcurrency": 4 }
+```
+
+## Workspace Tool
+
+The `workspace` tool is a shared JSON blackboard that persists across agent boundaries within the same orchestration session. Agents read and write structured data using dot-notation key paths; other agents in the same pipeline pick it up without any direct coupling.
+
+**Operations:**
+- `read` — read a value at a key path (or the whole document if no key)
+- `write` — set a value at a key path (creates intermediate objects automatically)
+- `append` — push a value onto an array at a key path (creates the array if absent)
+- `clear` — delete a key path (or reset the entire workspace if no key)
+- `keys` — list top-level or nested object field names
+
+**Key paths** use dot notation: `"plan.steps"`, `"test_results.failures"`, `"files_modified"`.
+
+**Storage:** `/tmp/pi-workspace-<md5-of-cwd>.json`
+
+**Security:** file permissions `0o600`, prototype pollution guard, atomic writes, 1 MB total workspace limit, 64 KB per-value limit, 1 000-item array cap.
+
+**Example — planner → worker → tester pipeline:**
+
+```
+# 1. Planner writes the plan
+workspace.write("plan.steps", ["add-auth-middleware", "update-routes", "write-tests"])
+workspace.write("plan.target_file", "src/middleware/auth.ts")
+
+# 2. Worker reads the plan, writes results
+workspace.read("plan")          # → { steps: [...], target_file: "..." }
+workspace.append("files_modified", "src/middleware/auth.ts")
+workspace.write("worker.status", "done")
+
+# 3. Tester checks what changed and records results
+workspace.read("files_modified")        # → ["src/middleware/auth.ts"]
+workspace.write("test_results.passed", 42)
+workspace.write("test_results.failed",  0)
+workspace.append("test_results.failures", "none")
 ```
 
 ## UI
@@ -122,23 +165,37 @@ If your agents need tools beyond the built-in set, those tools must be mapped in
 
 ```typescript
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
-  web_search: path.join(EXT_BASE, "web-search", "index.ts"),
-  web_fetch: path.join(EXT_BASE, "web-fetch", "index.ts"),
-  safe_bash: path.join(TOOLS_DIR, "safe-bash.ts"),
-  video_extract: path.join(EXT_BASE, "video-extract", "index.ts"),
-  youtube_search: path.join(EXT_BASE, "youtube-search", "index.ts"),
-  google_image_search: path.join(EXT_BASE, "google-image-search", "index.ts"),
+  web_search:  path.join(EXT_BASE, "web-search",  "index.ts"),
+  web_fetch:   path.join(EXT_BASE, "web-fetch",   "index.ts"),
+  safe_bash:   path.join(TOOLS_DIR, "safe-bash.ts"),
+  ast_grep:    path.join(TOOLS_DIR, "ast-grep.ts"),
+  repo_map:    path.join(TOOLS_DIR, "repo-map.ts"),
+  workspace:   path.join(TOOLS_DIR, "workspace.ts"),
 };
 ```
 
-Built-in tools (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`) work automatically. Any other tool the agent lists in its frontmatter must have a corresponding entry here pointing to the extension's `index.ts`.
+Built-in tools (`read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`) work automatically. Any other tool the agent lists in its frontmatter must have a corresponding entry here pointing to the extension's `index.ts` or tool file.
 
 ## Structure
 
 ```
 subagents/
 ├── index.ts           # Extension entry point
-├── agents/            # Built-in agent configs (frontmatter + system prompt)
-└── tools/             # Extensions loaded into subagent processes
-    └── safe-bash.ts   # bash with dangerous command blocking
+├── config.json        # Configuration (maxConcurrency: 4)
+├── agents/            # Agent configs (frontmatter + system prompt)
+│   ├── scout.md
+│   ├── researcher.md
+│   ├── planner.md
+│   ├── worker.md
+│   ├── tester.md
+│   ├── debugger.md
+│   ├── security-auditor.md
+│   ├── code-reviewer.md
+│   ├── doc-writer.md
+│   └── refactorer.md
+└── tools/             # Custom tool extensions loaded into subagent processes
+    ├── safe-bash.ts   # bash with dangerous command blocking
+    ├── ast-grep.ts    # AST-based structural search (tree-sitter)
+    ├── repo-map.ts    # compact codebase map (~2K tokens)
+    └── workspace.ts   # shared inter-agent blackboard
 ```

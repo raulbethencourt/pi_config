@@ -253,8 +253,8 @@ Before adding new agents, optimize the existing team and build supporting infras
 #### 📋 Shared Workspace / Blackboard
 
 - **Goal**: Common state object for inter-agent coordination during orchestration
-- **Implementation**: JSON state passed through agent pipeline
-- **Status**: [ ] Pending
+- **Implementation**: Created `subagents/tools/workspace.ts` — shared JSON document at `/tmp/pi-workspace-<hash>.json` (hash of CWD). Tool supports `read`, `write`, `append`, `clear`, `keys` operations with dot-notation key paths. Added `workspace` tool to all 9 agents (planner, worker, tester, debugger, security-auditor, doc-writer, refactorer, scout, code-reviewer).
+- **Status**: [x] Complete
 
 #### 🎰 MCTS-lite for Complex Tasks
 
@@ -327,6 +327,7 @@ Before adding new agents, optimize the existing team and build supporting infras
 
 ## Changelog
 
+- **2026-05-05**: Phase 6 — Shared Workspace / Blackboard complete. Created `subagents/tools/workspace.ts` with read/write/append/clear/keys operations, dot-notation paths, per-CWD JSON persistence. Added workspace tool to all 9 agents.
 - **2026-05-05**: Phase 6 — Tree-sitter Repo Map complete. Created `subagents/tools/repo-map.ts` using ast-grep definition extraction + Node.js formatter. Added `repo_map` tool to scout and planner agents.
 - **2026-05-05**: Phase 6 — SugarCRM testing skill created. Covers PHPUnit, bns curl E2E, and bns scheduler tests. Added to tester agent.
 - **2026-05-04**: Phase 6 — ast-grep integration complete. Created `tools/ast-grep.ts` extension, registered in CUSTOM_TOOL_EXTENSIONS, added to 5 agents (scout, planner, debugger, refactorer, security-auditor).
