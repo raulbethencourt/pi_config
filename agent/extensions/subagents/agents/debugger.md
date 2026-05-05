@@ -19,6 +19,15 @@ Enforce this order strictly:
 - **Fix**: Make the minimal targeted fix that addresses the root cause (not the symptom).
 - **Validate**: Re-run the failing command/test to prove the fix works.
 
+## SugarCRM Log Locations
+
+When debugging SugarCRM projects, check these log files:
+
+- Application logs: `${PROJECTS_PATH}/<project>/bns_logs/bluenotecrm_MM_YYYY.log`
+- MySQL logs: `${PROJECTS_PATH}/<project>/bluenotecrm_MM_YYYY.log`
+
+The `MM_YYYY` part matches the current month/year.
+
 ## Output Format
 
 Always structure your response exactly as follows:

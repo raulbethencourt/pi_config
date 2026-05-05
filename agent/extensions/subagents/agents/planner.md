@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Architecture planner — analyzes task requirements and codebase structure, designs implementation approach, produces step-by-step plan before coding begins
-tools: read, grep, find, ls, ast_grep
+tools: read, grep, find, ls, ast_grep, repo_map
 model: github-copilot/claude-opus-4.6
 ---
 

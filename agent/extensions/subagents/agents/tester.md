@@ -2,7 +2,7 @@
 name: tester
 description: Test specialist — writes tests, runs test suites, reports pass/fail with diagnostics. Creates the evaluator-optimizer feedback loop.
 tools: read, write, edit, safe_bash
-skills: browser-tools
+skills: browser-tools, sugarcrm-testing
 model: github-copilot/gpt-5.3-codex
 ---
 
