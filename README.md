@@ -50,7 +50,8 @@ Specialized work is delegated to subagents via the `subagent` tool.
                 ├── ast-grep.ts
                 ├── repo-map.ts
                 ├── workspace.ts
-                └── test-config.ts
+                ├── test-config.ts
+                └── repomix.ts
 ```
 
 ---
@@ -89,9 +90,9 @@ Specialized work is delegated to subagents via the `subagent` tool.
 
 | Agent | Tools | Skills |
 |-------|-------|--------|
-| worker | read, write, edit, safe_bash, workspace | frontend-design, code-philosophy |
+| worker | read, write, edit, safe_bash, workspace, repomix | frontend-design, code-philosophy |
 | scout | read, grep, find, ls, rg, ast_grep, repo_map | delta |
-| planner | read, grep, find, ls, ast_grep, repo_map, workspace | — |
+| planner | read, grep, find, ls, ast_grep, repo_map, workspace, repomix | — |
 | researcher | web_search, web_fetch | websearch |
 | tester | read, write, edit, safe_bash, workspace, test_config | browser-tools, sugarcrm-testing |
 | debugger | read, grep, find, safe_bash, ast_grep, workspace | — |
@@ -105,7 +106,7 @@ Specialized work is delegated to subagents via the `subagent` tool.
 
 ## Custom Tools
 
-Five tools are registered as extensions and loaded into every subagent process that lists them.
+Six tools are registered as extensions and loaded into every subagent process that lists them.
 
 ### `safe_bash`
 
@@ -151,6 +152,21 @@ Auto-detects project test infrastructure and stores configuration for reuse acro
 | `update` | Merge fields into stored config (e.g., confirm, override testDir) |
 
 Storage: `<project>/.pi/test-config.json`. After first detection and user confirmation, subsequent sessions skip detection.
+
+### `repomix`
+
+Packs a subset of the codebase into a single AI-optimized document using tree-sitter compression (~70% token reduction). Use when an agent needs holistic understanding of 5-20 related files — not for structural overview (use `repo_map`) or single files (use `read`).
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `path` | string | cwd | Directory to pack |
+| `include` | string[] | optional | Glob patterns to include (strongly recommended) |
+| `ignore` | string[] | optional | Additional patterns to exclude |
+| `compress` | boolean | `true` | Tree-sitter compression |
+| `style` | string | `markdown` | Output format: markdown, xml, plain |
+| `includeDiffs` | boolean | `false` | Include uncommitted git changes |
+| `removeComments` | boolean | `false` | Strip comments for further reduction |
+| `tokenCountTree` | boolean | `false` | Show token usage tree instead of content |
 
 ---
 
@@ -268,7 +284,7 @@ model: github-copilot/claude-sonnet-4.6
 You are my-agent. Your system prompt goes here...
 ```
 
-1. If the agent needs tools not in `CUSTOM_TOOL_EXTENSIONS` (i.e., not `web_search`, `web_fetch`, `safe_bash`, `ast_grep`, `repo_map`, `workspace`, `test_config`), add the mapping in `index.ts`:
+1. If the agent needs tools not in `CUSTOM_TOOL_EXTENSIONS` (i.e., not `web_search`, `web_fetch`, `safe_bash`, `ast_grep`, `repo_map`, `workspace`, `test_config`, `repomix`), add the mapping in `index.ts`:
 
 ```typescript
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {

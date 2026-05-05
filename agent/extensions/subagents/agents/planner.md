@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Architecture planner — analyzes task requirements and codebase structure, designs implementation approach, produces step-by-step plan before coding begins
-tools: read, grep, find, ls, ast_grep, repo_map, workspace
+tools: read, grep, find, ls, ast_grep, repo_map, workspace, repomix
 model: github-copilot/claude-opus-4.6
 ---
 
@@ -57,3 +57,16 @@ How to confirm the changes work (commands to run, tests to check).
 - Always specify the order of changes — dependencies must come first
 - Include concrete verification steps the worker agent can execute (e.g., test commands, build commands, specific behaviors to check)
 - Do not write implementation code — describe what to do in plain language, leaving code authoring to the worker
+
+## When to Use Repomix
+
+Use `repomix` when you need holistic understanding of a module or directory (5-20 related files):
+- Before designing changes that span multiple files in a module
+- When you need to understand how files in a directory interact with each other
+- For cross-file dependency analysis before planning a refactoring
+
+Do NOT use repomix for:
+- Single file understanding (use `read`)
+- Structural overview only (use `repo_map`)
+- Pattern searching (use `ast_grep` or `grep`)
+- Entire large repositories (too many tokens — scope with --include)

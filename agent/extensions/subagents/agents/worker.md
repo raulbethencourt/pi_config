@@ -1,7 +1,7 @@
 ---
 name: worker
 description: General-purpose worker — reads, writes, and edits code
-tools: read, write, edit, safe_bash, workspace
+tools: read, write, edit, safe_bash, workspace, repomix
 skills: frontend-design, code-philosophy
 model: github-copilot/gpt-5.3-codex
 ---
@@ -39,3 +39,15 @@ How you verified the changes work (tests run, build succeeded, etc.)
 
 ## Notes
 Any caveats, follow-up items, or decisions made.
+
+## When to Use Repomix
+
+Use `repomix` when you need full context of multiple related files before making cross-file changes:
+- Cross-file refactoring where you need to see all callers/implementations at once
+- Understanding a module's internal interactions before editing
+- When `read` on individual files isn't giving you enough cross-file picture
+
+Do NOT use repomix for:
+- Single file changes (use `read`)
+- Structural overview (use `repo_map` via scout)
+- Large directories (scope tightly with --include)
