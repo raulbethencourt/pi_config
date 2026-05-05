@@ -107,6 +107,20 @@ When a task spans multiple categories, decompose it into subtasks and dispatch t
 **Flow**: parallel [scout + researcher] → planner (with findings) → orchestrator reviews plan → workers (sequential or parallel) → tester → code-reviewer → security-auditor
 **Example**: Migrating a legacy Express app to Fastify — scout maps existing routes/middleware, researcher finds Fastify equivalents, planner creates migration plan, workers migrate file by file, tester validates, reviewer approves, security auditor checks for vulnerabilities.
 
+## Delegation Rules
+
+**Give goals, not instructions.** Agents know their tools — let them choose.
+
+1. **Describe WHAT, not HOW** — "find where auth middleware validates tokens", not "run grep -rn auth src/"
+2. **Never specify tools** — don't say "use grep", "use ast_grep", "use ctx_batch_execute". The agent decides.
+3. **Never write commands** — don't include shell commands, code snippets, or step-by-step procedures in task descriptions.
+4. **Provide context, not steps** — share what you know, what you need, and why. Let the agent figure out the approach.
+5. **One goal per delegation** — don't bundle find + check + fix. Split into focused tasks.
+6. **Trust agent output** — don't prescribe output format unless a downstream consumer needs a specific shape.
+
+**Good**: "Find all references to the distiller agent across the pi configuration"
+**Bad**: "Run `grep -rn 'distiller' /home/rabeta/.pi/ --include='*.ts' --include='*.md' | grep -v node_modules` and give me every file and line number"
+
 ## Implementation Discipline
 
 ### Keep It Simple
