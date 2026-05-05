@@ -115,6 +115,7 @@ const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 	ast_grep: path.join(TOOLS_DIR, "ast-grep.ts"),
 	repo_map: path.join(TOOLS_DIR, "repo-map.ts"),
 	workspace: path.join(TOOLS_DIR, "workspace.ts"),
+	test_config: path.join(TOOLS_DIR, "test-config.ts"),
 	video_extract: path.join(EXT_BASE, "video-extract", "index.ts"),
 	youtube_search: path.join(EXT_BASE, "youtube-search", "index.ts"),
 	google_image_search: path.join(EXT_BASE, "google-image-search", "index.ts"),

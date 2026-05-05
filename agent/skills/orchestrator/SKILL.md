@@ -121,6 +121,55 @@ When a task spans multiple categories, decompose it into subtasks and dispatch t
 **Good**: "Find all references to the distiller agent across the pi configuration"
 **Bad**: "Run `grep -rn 'distiller' /home/rabeta/.pi/ --include='*.ts' --include='*.md' | grep -v node_modules` and give me every file and line number"
 
+## Test Enforcement
+
+Every code change must be backed by tests. This is non-negotiable.
+
+### Detection Flow (first task in a project)
+
+1. Before any implementation, check if test config exists:
+   - Dispatch **tester** with: "Run test_config op='detect' and report results"
+2. If detected but not confirmed → ask user to confirm or adjust:
+   - "I detected [runner] in this project. Tests live in [testDir], run with [runCommand]. Is this correct?"
+3. If not detected → ask user:
+   - "No test infrastructure detected. What test runner do you use? Where do tests live? What command runs them?"
+4. Store confirmed config via test_config op='update' with confirmedByUser=true
+
+### Enforcement Rules
+
+After **any worker creates or modifies source files**:
+
+1. Check if the modified files have corresponding test files
+2. If tests are missing → dispatch **tester** with:
+   - The list of modified/created files
+   - The test config (runner, testDir, testPattern, singleFileCommand)
+   - Instruction: "Write tests for these files following project conventions. Run them and report results."
+3. If tests exist → dispatch **tester** with:
+   - Instruction: "Run existing tests that cover these files. Report pass/fail."
+
+**Skip test enforcement when:**
+- Change is documentation-only (*.md, *.txt)
+- Change is configuration-only (*.json, *.yml, *.yaml, *.toml config files)
+- Change is to test files themselves
+- User explicitly says "no tests" or "skip tests"
+
+### Test Creation Guidelines (passed to tester)
+
+- Follow existing test patterns in the project (naming, structure, assertions)
+- Place tests in the project's configured testDir
+- Match the project's testPattern naming convention
+- Test the public API/behavior, not implementation details
+- Cover: happy path, edge cases, error cases
+- Run tests after creation to verify they pass
+- Never modify existing test files
+
+### Integration with Workspace
+
+When running multi-agent pipelines with workspace:
+- Worker writes `files_modified` and `files_created` to workspace
+- Orchestrator reads workspace to determine which files need tests
+- Tester reads workspace for context on what was changed and why
+
 ## Implementation Discipline
 
 ### Keep It Simple
