@@ -48,7 +48,9 @@ Specialized work is delegated to subagents via the `subagent` tool.
             └── tools/           # Custom tools loaded into subagent processes
                 ├── safe-bash.ts
                 ├── ast-grep.ts
-                └── repo-map.ts
+                ├── repo-map.ts
+                ├── workspace.ts
+                └── test-config.ts
 ```
 
 ---
@@ -87,23 +89,23 @@ Specialized work is delegated to subagents via the `subagent` tool.
 
 | Agent | Tools | Skills |
 |-------|-------|--------|
-| worker | read, write, edit, safe_bash | frontend-design, code-philosophy |
+| worker | read, write, edit, safe_bash, workspace | frontend-design, code-philosophy |
 | scout | read, grep, find, ls, rg, ast_grep, repo_map | delta |
-| planner | read, grep, find, ls, ast_grep, repo_map | — |
+| planner | read, grep, find, ls, ast_grep, repo_map, workspace | — |
 | researcher | web_search, web_fetch | websearch |
-| tester | read, write, edit, safe_bash | browser-tools, sugarcrm-testing |
-| debugger | read, grep, find, safe_bash, ast_grep | — |
-| refactorer | read, write, edit, grep, find, ls, safe_bash, ast_grep | delta, code-philosophy |
-| security-auditor | read, grep, find, safe_bash, ast_grep | — |
-| doc-writer | read, write, edit, grep, find, ls | stop-slop, translation |
-| code-reviewer | read, grep, find, ls, rg | delta |
-| sugar-tester | read, write, edit, safe_bash | sugarcrm-testing |
+| tester | read, write, edit, safe_bash, workspace, test_config | browser-tools, sugarcrm-testing |
+| debugger | read, grep, find, safe_bash, ast_grep, workspace | — |
+| refactorer | read, write, edit, grep, find, ls, safe_bash, ast_grep, workspace | delta, code-philosophy |
+| security-auditor | read, grep, find, safe_bash, ast_grep, workspace | — |
+| doc-writer | read, write, edit, grep, find, ls, workspace | stop-slop, translation |
+| code-reviewer | read, grep, find, ls, rg, workspace | delta |
+| sugar-tester | read, write, edit, safe_bash, workspace, test_config | sugarcrm-testing |
 
 ---
 
 ## Custom Tools
 
-Three tools are registered as extensions and loaded into every subagent process that lists them.
+Five tools are registered as extensions and loaded into every subagent process that lists them.
 
 ### `safe_bash`
 
@@ -123,6 +125,32 @@ Generates a compact structural map of a codebase — all functions, classes, int
 | `lang` | string | optional | `typescript`, `javascript`, `php`, `python` |
 | `maxLines` | number | `200` | Cap output length |
 | `globs` | object | optional | `include` / `exclude` glob patterns |
+
+### `workspace`
+
+Shared JSON blackboard for inter-agent communication. Agents read and write structured data using dot-notation key paths; other agents in the same pipeline pick it up without direct coupling.
+
+| Operation | Description |
+|-----------|-------------|
+| `read` | Read a value at a key path (or full document if no key) |
+| `write` | Set a value at a key path (creates intermediates) |
+| `append` | Push a value onto an array (creates if absent) |
+| `clear` | Delete a key path or reset entire workspace |
+| `keys` | List object field names |
+
+Storage: `/tmp/pi-workspace-<md5-of-cwd>.json` — persists across agent handoffs within a session. Security: `0o600` permissions, prototype pollution guard, atomic writes, 1 MB limit, 64 KB per-value, 1000-item array cap.
+
+### `test_config`
+
+Auto-detects project test infrastructure and stores configuration for reuse across sessions.
+
+| Operation | Description |
+|-----------|-------------|
+| `detect` | Scan for known runner configs (vitest, jest, phpunit, pytest, go test, bats, mocha) |
+| `read` | Return stored test config |
+| `update` | Merge fields into stored config (e.g., confirm, override testDir) |
+
+Storage: `<project>/.pi/test-config.json`. After first detection and user confirmation, subsequent sessions skip detection.
 
 ---
 
@@ -240,7 +268,7 @@ model: github-copilot/claude-sonnet-4.6
 You are my-agent. Your system prompt goes here...
 ```
 
-1. If the agent needs tools not in `CUSTOM_TOOL_EXTENSIONS` (i.e., not `web_search`, `web_fetch`, `safe_bash`, `ast_grep`, `repo_map`), add the mapping in `index.ts`:
+1. If the agent needs tools not in `CUSTOM_TOOL_EXTENSIONS` (i.e., not `web_search`, `web_fetch`, `safe_bash`, `ast_grep`, `repo_map`, `workspace`, `test_config`), add the mapping in `index.ts`:
 
 ```typescript
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {

@@ -327,6 +327,7 @@ Before adding new agents, optimize the existing team and build supporting infras
 
 ## Changelog
 
+- **2026-05-05**: Test Enforcement system implemented. Created `subagents/tools/test-config.ts` (auto-detects vitest/jest/phpunit/pytest/go/bats/mocha, stores at `.pi/test-config.json`). Added `test_config` tool to tester and sugar-tester agents. Added "Test Enforcement" section to orchestrator skill with detection flow, enforcement rules, and workspace integration. 230 tests passing.
 - **2026-05-05**: Phase 6 — Shared Workspace / Blackboard complete. Created `subagents/tools/workspace.ts` with read/write/append/clear/keys operations, dot-notation paths, per-CWD JSON persistence. Added workspace tool to all 9 agents.
 - **2026-05-05**: Phase 6 — Tree-sitter Repo Map complete. Created `subagents/tools/repo-map.ts` using ast-grep definition extraction + Node.js formatter. Added `repo_map` tool to scout and planner agents.
 - **2026-05-05**: Phase 6 — SugarCRM testing skill created. Covers PHPUnit, bns curl E2E, and bns scheduler tests. Added to tester agent.
