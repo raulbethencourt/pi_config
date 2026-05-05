@@ -37,6 +37,41 @@ export default function (pi: ExtensionAPI) {
                 typeof f === "string" ? f : f.path ?? f.name ?? String(f)
             );
         }
+        // Also discover SYSTEM.md and APPEND_SYSTEM.md (loaded by pi via separate code paths)
+        const { existsSync } = await import("node:fs");
+        const { join } = await import("node:path");
+        const { homedir } = await import("node:os");
+        const agentDir = join(homedir(), ".pi", "agent");
+        const projectDir = process.cwd();
+        const extraContextFiles: Array<{ path: string; label: string }> = [];
+        // System prompt files
+        const systemCandidates = [
+            { path: join(projectDir, ".pi", "SYSTEM.md"), label: "SYSTEM.md (project)" },
+            { path: join(agentDir, "SYSTEM.md"), label: "SYSTEM.md (global)" },
+        ];
+        for (const c of systemCandidates) {
+            if (existsSync(c.path)) {
+                extraContextFiles.push(c);
+                break; // project overrides global
+            }
+        }
+        // Append system prompt files
+        const appendCandidates = [
+            { path: join(projectDir, ".pi", "APPEND_SYSTEM.md"), label: "APPEND_SYSTEM.md (project)" },
+            { path: join(agentDir, "APPEND_SYSTEM.md"), label: "APPEND_SYSTEM.md (global)" },
+        ];
+        for (const c of appendCandidates) {
+            if (existsSync(c.path)) {
+                extraContextFiles.push(c);
+                break; // project overrides global
+            }
+        }
+        // Append discovered files to cachedContextFiles
+        for (const f of extraContextFiles) {
+            if (!cachedContextFiles.includes(f.path)) {
+                cachedContextFiles.push(f.path);
+            }
+        }
     });
 
     pi.registerCommand("context", {
@@ -278,10 +313,59 @@ export default function (pi: ExtensionAPI) {
             lines.push("");
 
             // ── Context Files ──
-            if (cachedContextFiles.length > 0) {
-                lines.push(heading(`  Context Files (${cachedContextFiles.length})`));
+            // If cache is empty (e.g. after /reload), discover from filesystem
+            let contextFilesToShow = cachedContextFiles;
+            if (contextFilesToShow.length === 0) {
+                const { existsSync } = await import("node:fs");
+                const { join } = await import("node:path");
+                const { homedir } = await import("node:os");
+                const agentDir = join(homedir(), ".pi", "agent");
+                const projectDir = process.cwd();
+                const discovered: string[] = [];
+                // Context files (AGENTS.md / CLAUDE.md)
+                const contextCandidates = [
+                    join(agentDir, "AGENTS.md"),
+                    join(agentDir, "CLAUDE.md"),
+                    join(projectDir, "AGENTS.md"),
+                    join(projectDir, "CLAUDE.md"),
+                ];
+                for (const c of contextCandidates) {
+                    if (existsSync(c) && !discovered.includes(c)) discovered.push(c);
+                }
+                // Walk up from cwd
+                let dir = projectDir;
+                const root = join("/");
+                while (dir !== root) {
+                    const parent = join(dir, "..");
+                    if (parent === dir) break;
+                    dir = parent;
+                    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+                        const p = join(dir, name);
+                        if (existsSync(p) && !discovered.includes(p)) discovered.push(p);
+                    }
+                }
+                // SYSTEM.md
+                const systemCandidates = [
+                    join(projectDir, ".pi", "SYSTEM.md"),
+                    join(agentDir, "SYSTEM.md"),
+                ];
+                for (const c of systemCandidates) {
+                    if (existsSync(c)) { discovered.push(c); break; }
+                }
+                // APPEND_SYSTEM.md
+                const appendCandidates = [
+                    join(projectDir, ".pi", "APPEND_SYSTEM.md"),
+                    join(agentDir, "APPEND_SYSTEM.md"),
+                ];
+                for (const c of appendCandidates) {
+                    if (existsSync(c)) { discovered.push(c); break; }
+                }
+                contextFilesToShow = discovered;
+            }
+            if (contextFilesToShow.length > 0) {
+                lines.push(heading(`  Context Files (${contextFilesToShow.length})`));
                 lines.push("");
-                for (const f of cachedContextFiles) {
+                for (const f of contextFilesToShow) {
                     const short = typeof f === "string" ? f.replace(/^.*\/(\.pi|agent)\//, "") : String(f);
                     lines.push(`    ${dim("📄")} ${value(short)}`);
                 }
