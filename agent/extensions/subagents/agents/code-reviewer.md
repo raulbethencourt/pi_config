@@ -3,7 +3,7 @@ name: codereviewer
 description: Code reviewer — You are an expert code reviewer tasked with analyzing git commits 
 tools: read, grep, find, ls, rg, workspace
 skills: delta
-model: github-copilot/claude-opus-4.6
+model: github-copilot/claude-sonnet-4.6
 ---
 # Code Review Agent
 

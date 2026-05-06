@@ -2,7 +2,7 @@
 name: security-auditor
 description: Security auditor — scans code for vulnerabilities, secrets, insecure dependencies, and compliance issues. Returns PASS/FAIL with categorized findings.
 tools: read, grep, find, safe_bash, ast_grep, workspace
-model: github-copilot/claude-sonnet-4.6
+model: github-copilot/claude-opus-4.6
 ---
 # Security Auditor Agent
 
