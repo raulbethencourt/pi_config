@@ -42,6 +42,7 @@ If any of those are fuzzy, you're not ready to implement.
 | Review git diff, validate code quality | code-reviewer | Specialized for APPROVE/REJECT workflow |
 | Error analysis, test failure, stack trace debugging | debugger | Backward reasoning from symptoms to root cause, applies minimal fix |
 | Security scan, pre-commit vulnerability check | security-auditor | PASS/FAIL gate for secrets, injection, insecure dependencies |
+| Validate a plan before execution, challenge assumptions | critic | Adversarial review — finds blind spots, over-engineering, missing edge cases |
 | Ambiguous or unclear request | ask_user_question | Never guess, clarify first |
 
 When a task spans multiple categories, decompose it into subtasks and dispatch the appropriate agent for each.
@@ -86,6 +87,25 @@ When a task spans multiple categories, decompose it into subtasks and dispatch t
 - Reviewer flags a fundamental design issue (wrong approach, not fixable with patches)
 - Reviewer's issues require user input or clarification
 - In these cases, stop and escalate to the user with the reviewer's analysis
+
+### Planner → Critic → Worker Pipeline
+**When**: Non-trivial changes where the planner produced a design/plan. The critic validates the plan before execution begins.
+**Flow**: planner → critic (with plan text) → orchestrator evaluates verdict → worker(s)
+**Example**: Planner proposes a migration strategy — critic challenges assumptions about backward compatibility — plan is revised before workers execute.
+
+**Protocol:**
+1. Dispatch **planner** with the design task
+2. Dispatch **critic** with the planner's output as input
+3. Evaluate the critic's verdict:
+   - **PROCEED** → continue to worker(s) with the plan + critic's noted concerns as awareness context
+   - **REVISE** → re-dispatch planner with critic's warnings as constraints, then re-dispatch critic (max 1 revision loop)
+   - **BLOCK** → stop and escalate to user with both the plan and the critic's blockers
+4. Never skip the critic for planner-routed tasks unless the user explicitly requests speed over safety
+
+**When to skip the critic:**
+- Trivial changes that don't go through the planner (direct worker dispatch)
+- User explicitly says "just do it" or "skip review"
+- Pure documentation or config changes with no behavioral impact
 
 ### Planner → Worker Pipeline
 **When**: Non-trivial code change that requires design decisions (new feature, refactor, migration).
