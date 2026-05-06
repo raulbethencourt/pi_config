@@ -295,7 +295,7 @@ Before adding new agents, optimize the existing team and build supporting infras
      - `--project <path>` → per-project spending
      - `--expensive <N>` → top N most expensive runs
   4. Optional later: HTML dashboard (ctx-insight style)
-- **Status**: [ ] Pending
+- **Status**: [x] Complete — SQLite telemetry in `subagents/telemetry.ts`, `token_stats` tool in `subagents/tools/token-stats.ts`, `/token_stats` slash command in `extensions/token-stats-cmd/index.ts` (scrollable TUI dashboard with summary, by-agent, by-model, by-day bar chart, top 5 expensive runs, by-project)
 
 ## Future Patterns to Explore
 
@@ -327,6 +327,7 @@ Before adding new agents, optimize the existing team and build supporting infras
 
 ## Changelog
 
+- **2026-05-06**: Observability & Token Analytics complete. Created `/token_stats` slash command (`extensions/token-stats-cmd/index.ts`) — scrollable TUI dashboard showing summary, per-agent/model/day/project breakdowns, ASCII bar chart, top 5 expensive runs. Supports period argument (today/week/month/all). Auto-discovered by pi extension loader.
 - **2026-05-06**: Model upgrades: Changed scout model from grok-code-fast-1 to gpt-5.4-mini to improve codebase comprehension while maintaining parallel fan-out speed.
 - **2026-05-06**: TDD-First enforcement implemented. Replaced test-after flow with test-first (RED→GREEN→REFACTOR). Sugar-tester is primary test agent (80% SugarCRM work). Added RED Phase to sugar-tester and tester agents. Added "Testable Behaviors" output requirement to planner. Updated orchestrator with TDD Loop pattern. Soft enforcement — bypassable with "skip tests"/"spike"/"prototype"/"no tests". Updated AGENTS.md global workflows.
 - **2026-05-05**: Test Enforcement system implemented. Created `subagents/tools/test-config.ts` (auto-detects vitest/jest/phpunit/pytest/go/bats/mocha, stores at `.pi/test-config.json`). Added `test_config` tool to tester and sugar-tester agents. Added "Test Enforcement" section to orchestrator skill with detection flow, enforcement rules, and workspace integration. 230 tests passing.
@@ -394,8 +395,8 @@ These are follow-up observations after the initial model assignment pass. They g
 - Revisit model assignments monthly using data, not intuition.
 
 ### Suggested order of work
-1. Add critic agent (low effort, high signal).
-2. Implement two-stage escalation for `security-auditor` and `code-reviewer`.
+1. ~~Add critic agent (low effort, high signal).~~ ✅ Complete
+2. ~~Implement two-stage escalation for `security-auditor` and `code-reviewer`.~~ ✅ Complete
 3. Re-evaluate `tester`, `refactorer`, and `scout` model choices with small A/B runs.
 4. Build complexity-based router skill.
-5. Add telemetry + monthly review cadence.
+5. ~~Add telemetry + monthly review cadence.~~ ✅ Complete

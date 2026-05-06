@@ -197,6 +197,18 @@ Every code change must be backed by tests. This is non-negotiable.
 
 ### Enforcement Rules
 
+**NEW EXTENSION/MODULE = TESTS FIRST (no exceptions)**
+
+Before dispatching a worker to create any new `.ts`, `.js`, `.py`, or `.php` source file that contains logic (not config/docs):
+1. **STOP** — ask yourself: "Do tests exist for this new code?"
+2. If NO → dispatch **tester** first to write failing tests based on the planned behavior
+3. Only THEN dispatch **worker** to implement
+4. After worker completes → dispatch **tester** to verify GREEN
+
+This is a mechanical check, not a judgment call. New source file → tests must exist before or alongside it. Period.
+
+---
+
 After **any worker creates or modifies source files**:
 
 1. Check if the modified files have corresponding test files

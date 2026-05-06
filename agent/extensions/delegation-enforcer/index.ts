@@ -38,6 +38,26 @@ export default function (pi: ExtensionAPI) {
 		};
 	});
 
+	// TDD enforcement warning: log when new extension/source files are created without tests
+	// This is a soft gate — it warns but doesn't block. The orchestrator skill enforces the hard rule.
+	pi.on("tool_result", async (event) => {
+		if (event.toolName !== "subagent") return undefined;
+		const text = typeof event.result === "string" ? event.result : JSON.stringify(event.result ?? "");
+		// Detect new file creation in extensions/ or src/ without corresponding test
+		const createdFileMatch = text.match(/(?:created|wrote|new file)[^]*?(extensions\/[^\s"']+\.ts|src\/[^\s"']+\.ts)/i);
+		if (createdFileMatch) {
+			const createdFile = createdFileMatch[1];
+			const isTestFile = /\.test\.ts$|\.spec\.ts$/.test(createdFile);
+			const isConfigOrDoc = /\.(json|md|yml|yaml|toml)$/.test(createdFile);
+			if (!isTestFile && !isConfigOrDoc) {
+				console.error(
+					`[delegation-enforcer] ⚠️  TDD WARNING: New source file "${createdFile}" created. Ensure tests exist. See orchestrator skill "Test Enforcement" rules.`
+				);
+			}
+		}
+		return undefined;
+	});
+
 	// Register /delegation command to toggle bypass
 	pi.registerCommand("delegation", {
 		description: "Toggle delegation enforcement bypass (orchestrator-only tool guard)",
