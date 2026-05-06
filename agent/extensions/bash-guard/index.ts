@@ -165,6 +165,63 @@ export function analyzeSegment(seg: Token[]): Risk | null {
         } // end else (non-readonly git)
     }
 
+    // Database CLI tools — destructive operations
+    if (cmd === "mysql" || cmd === "mariadb") {
+        const joined = rest.join(" ");
+        if (/\b(DROP|TRUNCATE)\b/i.test(joined)) {
+            severity = "high";
+            reasons.push("destructive SQL via mysql/mariadb CLI (DROP/TRUNCATE)");
+        }
+        if (/\bDELETE\s+FROM\s+\w+\s*(?:;|$|"|')/i.test(joined)) {
+            severity = "high";
+            reasons.push("DELETE FROM without WHERE clause via mysql CLI");
+        }
+    }
+    if (cmd === "psql") {
+        const joined = rest.join(" ");
+        if (/\b(DROP|TRUNCATE)\b/i.test(joined)) {
+            severity = "high";
+            reasons.push("destructive SQL via psql CLI (DROP/TRUNCATE)");
+        }
+        if (/\bDELETE\s+FROM\s+\w+\s*(?:;|$|"|')/i.test(joined)) {
+            severity = "high";
+            reasons.push("DELETE FROM without WHERE clause via psql CLI");
+        }
+    }
+    if (cmd === "sqlite3" || cmd === "sqlite") {
+        const joined = rest.join(" ");
+        if (/\b(DROP|TRUNCATE)\b/i.test(joined)) {
+            severity = "high";
+            reasons.push("destructive SQL via sqlite3 CLI (DROP/TRUNCATE)");
+        }
+        if (/\bDELETE\s+FROM\s+\w+\s*(?:;|$|"|')/i.test(joined)) {
+            severity = "high";
+            reasons.push("DELETE FROM without WHERE clause via sqlite3 CLI");
+        }
+    }
+    if (cmd === "redis-cli") {
+        const joined = rest.join(" ");
+        if (/\b(FLUSHALL|FLUSHDB)\b/i.test(joined)) {
+            severity = "high";
+            reasons.push("Redis FLUSHALL/FLUSHDB (wipes all data)");
+        }
+    }
+    if (cmd === "mongosh" || cmd === "mongo") {
+        const joined = rest.join(" ");
+        if (/\b(dropDatabase|dropCollection|drop\(\))/.test(joined)) {
+            severity = "high";
+            reasons.push("MongoDB drop database/collection");
+        }
+    }
+    // Elasticsearch — curl DELETE to ES port
+    if (cmd === "curl" && rest.some(a => a === "DELETE" || a === "-XDELETE")) {
+        const joined = rest.join(" ");
+        if (/:9200\//.test(joined) || /localhost:9200/.test(joined) || /\b_all\b/.test(joined)) {
+            severity = "high";
+            reasons.push("Elasticsearch index deletion (curl DELETE to :9200)");
+        }
+    }
+
     // truncate
     if (cmd === "truncate") {
         severity = severity === "high" ? "high" : "medium";
@@ -350,6 +407,11 @@ export function analyzeBashCommand(command: string): Risk | null {
             /\b(shutdown|reboot|halt|poweroff)\b/,
             /\bterraform\s+destroy\b/, /\bkubectl\s+delete\b/,
             /\bgit\s+(push|reset\s+--hard|clean\s+-[a-zA-Z]*f)\b/,
+            /\bDROP\s+(DATABASE|TABLE|SCHEMA)\b/i,
+            /\bTRUNCATE\s+TABLE\b/i,
+            /\b(FLUSHALL|FLUSHDB)\b/i,
+            /\b(dropDatabase|dropCollection)\b/,
+            /\bcurl\b[^#\n]*-X\s*DELETE[^#\n]*:9200/,
         ];
         for (const p of DANGER) {
             if (p.test(command)) {
@@ -547,7 +609,83 @@ const HEADLESS_BLOCKED: Array<{ pattern: RegExp; reason: string }> = [
         pattern: /\bgit\s+gc\b[^#\n]*--prune\b/,
         reason: "prune unreachable objects (git gc --prune)",
     },
+    // Database destruction
+    {
+        pattern: /\bDROP\s+(DATABASE|TABLE|SCHEMA)\b/i,
+        reason: "DROP DATABASE/TABLE/SCHEMA (irreversible data loss)",
+    },
+    {
+        pattern: /\bTRUNCATE\s+(TABLE\s+)?\w/i,
+        reason: "TRUNCATE TABLE (deletes all rows, irreversible)",
+    },
+    {
+        pattern: /\bDELETE\s+FROM\s+\w+\s*(?:;|$|"|')/i,
+        reason: "DELETE FROM without WHERE clause (mass deletion)",
+    },
+    // MySQL/MariaDB
+    {
+        pattern: /\bmysql\b[^#\n]*\b(DROP|TRUNCATE)\b/i,
+        reason: "destructive SQL via mysql CLI",
+    },
+    // PostgreSQL
+    {
+        pattern: /\bpsql\b[^#\n]*\b(DROP|TRUNCATE)\b/i,
+        reason: "destructive SQL via psql CLI",
+    },
+    // SQLite
+    {
+        pattern: /\bsqlite3?\b[^#\n]*\b(DROP|TRUNCATE)\b/i,
+        reason: "destructive SQL via sqlite3 CLI",
+    },
+    {
+        pattern: /\bsqlite3?\b[^#\n]*\bDELETE\s+FROM\s+\w+\s*(?:;|$|"|')/i,
+        reason: "mass DELETE via sqlite3 CLI (no WHERE clause)",
+    },
+    // Redis
+    {
+        pattern: /\bredis-cli\b[^#\n]*\b(FLUSHALL|FLUSHDB)\b/i,
+        reason: "Redis FLUSHALL/FLUSHDB (wipes all data)",
+    },
+    // MongoDB
+    {
+        pattern: /\b(mongosh|mongo)\b[^#\n]*\b(dropDatabase|dropCollection|drop\(\))/,
+        reason: "MongoDB drop database/collection",
+    },
+    // Elasticsearch
+    {
+        pattern: /\bcurl\b[^#\n]*-X\s*DELETE[^#\n]*localhost:9200/,
+        reason: "Elasticsearch index deletion via curl DELETE",
+    },
+    {
+        pattern: /\bcurl\b[^#\n]*-X\s*DELETE[^#\n]*:9200\//,
+        reason: "Elasticsearch index deletion via curl DELETE",
+    },
+    {
+        pattern: /\bcurl\b[^#\n]*DELETE[^#\n]*_all\b/,
+        reason: "Elasticsearch delete _all indices",
+    },
 ];
+
+// ── Protected Folders (non-bypassable, ALL contexts) ─────────────────
+// These directories are completely off-limits for write operations.
+// No agent, no bypass, no escape hatch. Hard-block always.
+const HOME = process.env.HOME || "/home/rabeta";
+const PROTECTED_FOLDERS = [
+    `${HOME}/.ssh`,
+    `${HOME}/personal`,
+    `${HOME}/secure`,
+    `${HOME}/Documents`,
+];
+
+export function isProtectedPath(filePath: string): boolean {
+    // Resolve ~ to HOME
+    const resolved = filePath.startsWith("~")
+        ? filePath.replace(/^~/, HOME)
+        : filePath;
+    return PROTECTED_FOLDERS.some(
+        (folder) => resolved === folder || resolved.startsWith(folder + "/"),
+    );
+}
 
 // ── Test File Protection ──────────────────────────────────────────────
 // CRITICAL: Existing test files are immutable. If a test fails, fix the
@@ -577,6 +715,76 @@ export function testFileExists(filePath: string): boolean {
 }
 
 export default function(pi: ExtensionAPI) {
+    // ── Protected folders guard (applies to ALL contexts, non-bypassable) ──
+    pi.on("tool_call", async (event) => {
+        // Block write tool to protected folders
+        if (isToolCallEventType("write", event)) {
+            const path = event.input.path as string;
+            if (path && isProtectedPath(path)) {
+                return {
+                    block: true,
+                    reason:
+                        `HARD BLOCKED: "${path}" is inside a protected folder. ` +
+                        "These directories are completely off-limits: " +
+                        PROTECTED_FOLDERS.join(", ") +
+                        ". This cannot be bypassed.",
+                };
+            }
+        }
+
+        // Block edit tool to protected folders
+        if (isToolCallEventType("edit", event)) {
+            const path = event.input.path as string;
+            if (path && isProtectedPath(path)) {
+                return {
+                    block: true,
+                    reason:
+                        `HARD BLOCKED: "${path}" is inside a protected folder. ` +
+                        "These directories are completely off-limits: " +
+                        PROTECTED_FOLDERS.join(", ") +
+                        ". This cannot be bypassed.",
+                };
+            }
+        }
+
+        // Block read tool to protected folders
+        if (isToolCallEventType("read", event)) {
+            const path = event.input.path as string;
+            if (path && isProtectedPath(path)) {
+                return {
+                    block: true,
+                    reason:
+                        `HARD BLOCKED: "${path}" is inside a protected folder. ` +
+                        "These directories are completely off-limits (no read, no write): " +
+                        PROTECTED_FOLDERS.join(", ") +
+                        ". This cannot be bypassed.",
+                };
+            }
+        }
+
+        // Block bash commands that target protected folders
+        if (isToolCallEventType("bash", event)) {
+            const command = event.input.command as string;
+            for (const folder of PROTECTED_FOLDERS) {
+                // Check both the full path and ~ shorthand
+                const tildeForm = folder.replace(HOME, "~");
+                if (command.includes(folder) || command.includes(tildeForm)) {
+                    // Allow purely read-only commands (ls, cat, file, stat, wc, head, tail, less, more, tree)
+                    const READ_ONLY_CMDS = /^\s*(ls|cat|file|stat|wc|head|tail|less|more|tree|find|grep|rg|fd|bat)\b/;
+                    if (!READ_ONLY_CMDS.test(command)) {
+                        return {
+                            block: true,
+                            reason:
+                                `HARD BLOCKED: command references protected folder "${folder}". ` +
+                                "These directories are completely off-limits for write operations. " +
+                                "This cannot be bypassed.",
+                        };
+                    }
+                }
+            }
+        }
+    });
+
     // ── Test file immutability guard (applies to ALL contexts) ──────────
     pi.on("tool_call", async (event) => {
         if (testGuardBypassed) return;

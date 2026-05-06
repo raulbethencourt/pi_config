@@ -6,7 +6,7 @@
 
 | Agent | Model | Tools | Role |
 |---|---|---|---|
-| **scout** | grok-code-fast-1 | read, grep, find, ls | Fast codebase investigator. Locates files, traces dependencies, returns structured findings. |
+| **scout** | gpt-5.4-mini | read, grep, find, ls | Fast codebase investigator. Locates files, traces dependencies, returns structured findings. |
 | **researcher** | claude-opus-4.6 | web_search, web_fetch | Web research specialist. Searches, fetches sources, synthesizes into sourced briefs. |
 | **worker** | claude-sonnet-4.6 | read, write, edit, safe_bash | Isolated code executor. Reads before editing, makes targeted changes, verifies with commands. |
 | **code-reviewer** | claude-sonnet-4-5 | read, grep, find, ls, rg | Git commit reviewer. APPROVE/REJECT with categorized issues (Critical/Important/Minor). |
@@ -128,7 +128,7 @@ Before adding new agents, optimize the existing team and build supporting infras
     - Code-reviewer → needs strong reasoning + attention to detail
   - Document choices with rationale
 - **Status**: [x] Complete — see model assignments below
-  - scout: grok-code-fast-1 (speed)
+  - scout: gpt-5.4-mini (fast and cheap, but with better code comprehension than grok)
   - researcher: claude-opus-4.6 (1M ctx, best reasoning)
   - planner: claude-opus-4.6 (architecture decisions need best reasoning)
   - worker: gpt-5.3-codex (purpose-built for code generation, upgraded from 5.1 which failed in JSON mode)
@@ -327,6 +327,7 @@ Before adding new agents, optimize the existing team and build supporting infras
 
 ## Changelog
 
+- **2026-05-06**: Model upgrades: Changed scout model from grok-code-fast-1 to gpt-5.4-mini to improve codebase comprehension while maintaining parallel fan-out speed.
 - **2026-05-06**: TDD-First enforcement implemented. Replaced test-after flow with test-first (RED→GREEN→REFACTOR). Sugar-tester is primary test agent (80% SugarCRM work). Added RED Phase to sugar-tester and tester agents. Added "Testable Behaviors" output requirement to planner. Updated orchestrator with TDD Loop pattern. Soft enforcement — bypassable with "skip tests"/"spike"/"prototype"/"no tests". Updated AGENTS.md global workflows.
 - **2026-05-05**: Test Enforcement system implemented. Created `subagents/tools/test-config.ts` (auto-detects vitest/jest/phpunit/pytest/go/bats/mocha, stores at `.pi/test-config.json`). Added `test_config` tool to tester and sugar-tester agents. Added "Test Enforcement" section to orchestrator skill with detection flow, enforcement rules, and workspace integration. 230 tests passing.
 - **2026-05-05**: Phase 6 — Shared Workspace / Blackboard complete. Created `subagents/tools/workspace.ts` with read/write/append/clear/keys operations, dot-notation paths, per-CWD JSON persistence. Added workspace tool to all 9 agents.
@@ -362,7 +363,7 @@ These are follow-up observations after the initial model assignment pass. They g
 - Action: evaluate moving `tester` to Sonnet or Opus so test design is independent from implementation.
 
 ### 3. Role-specific reconsiderations
-- **scout (`grok-code-fast-1`)**: speed is right, but weak code/repo comprehension can poison planner inputs. Evaluate a small Sonnet-tier or `gpt-5-mini`-tier alternative.
+- **scout (`gpt-5.4-mini`)**: Upgraded from Grok to fix weak code comprehension while maintaining speed/cost efficiency for parallel fan-outs.
 - **refactorer (`gpt-5.3-codex`)**: refactoring needs behavior-preservation reasoning, not just code generation. Evaluate Sonnet/Opus for non-trivial refactors.
 - **doc-writer (`claude-sonnet-4.6`)**: routine docs could run on a lighter Haiku-tier / `gpt-5-mini`-tier model.
 - **planner (`claude-opus-4.6`)**: keep model, but explicitly enable extended thinking / reasoning mode where supported.
