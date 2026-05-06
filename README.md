@@ -44,6 +44,9 @@ Specialized work is delegated to subagents via the `subagent` tool.
             │   ├── security-auditor.md
             │   ├── doc-writer.md
             │   ├── code-reviewer.md
+            │   ├── code-reviewer-deep.md
+            │   ├── critic.md
+            │   ├── security-auditor-deep.md
             │   └── sugar-tester.md
             └── tools/           # Custom tools loaded into subagent processes
                 ├── safe-bash.ts
@@ -70,21 +73,24 @@ Specialized work is delegated to subagents via the `subagent` tool.
 
 ## Agents
 
-11 built-in agents. Each is defined by a `.md` file in `agent/extensions/subagents/agents/` — YAML frontmatter for config, body for system prompt.
+14 built-in agents. Each is defined by a `.md` file in `agent/extensions/subagents/agents/` — YAML frontmatter for config, body for system prompt.
 
 | Agent | Purpose | Model |
 |-------|---------|-------|
 | **worker** | General-purpose code writing/editing | gpt-5.3-codex |
 | **scout** | Fast codebase recon — files, patterns, architecture | grok-code-fast-1 |
 | **planner** | Architecture planning — requirements analysis, implementation design | claude-opus-4.6 |
-| **researcher** | Web research — searches and synthesizes findings | claude-opus-4.6 |
+| **researcher** | Web research — searches and synthesizes findings | claude-sonnet-4.6 |
 | **tester** | Writes tests, runs suites, reports diagnostics | gpt-5.3-codex |
 | **debugger** | Backward reasoning from symptoms to root cause | claude-opus-4.6 |
 | **refactorer** | Improves code quality without changing behavior | gpt-5.3-codex |
 | **security-auditor** | Scans for vulnerabilities, secrets, insecure dependencies | claude-sonnet-4.6 |
 | **doc-writer** | Generates/updates docs, READMEs, changelogs | claude-sonnet-4.6 |
-| **code-reviewer** | Expert review of git commits | claude-opus-4.6 |
-| **sugar-tester** | SugarCRM-specific testing (bns curl E2E, PHPUnit, scheduler) | (default) |
+| **code-reviewer** | Expert review of git commits | claude-sonnet-4.6 |
+| **sugar-tester** | SugarCRM-specific testing (bns curl E2E, PHPUnit, scheduler) | gpt-5.3-codex |
+| **critic** | Devil's advocate — challenges plans before execution | claude-sonnet-4.6 |
+| **security-auditor-deep** | Deep security audit (escalation tier) — Opus-level analysis | claude-opus-4.6 |
+| **code-reviewer-deep** | Deep code review (escalation tier) — architectural analysis | claude-opus-4.6 |
 
 **Tools by agent:**
 
@@ -101,6 +107,9 @@ Specialized work is delegated to subagents via the `subagent` tool.
 | doc-writer | read, write, edit, grep, find, ls, workspace | stop-slop, translation |
 | code-reviewer | read, grep, find, ls, rg, workspace | delta |
 | sugar-tester | read, write, edit, safe_bash, workspace, test_config | sugarcrm-testing |
+| critic | read, grep, find, ls | — |
+| security-auditor-deep | read, grep, find, safe_bash, ast_grep, workspace | — |
+| code-reviewer-deep | read, grep, find, ls, rg, workspace | delta |
 
 ---
 

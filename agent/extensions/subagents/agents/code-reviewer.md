@@ -42,6 +42,8 @@ repository.
 **REQUIRED**: Your response MUST start with either `APPROVE` or `REJECT` on the first line.
 
 ### For APPROVE: ``` APPROVE
+CONFIDENCE: HIGH | MEDIUM | LOW
+Reason: [one-line explanation]
 
 ✓ Changes look good with minor notes:
 
@@ -51,6 +53,8 @@ repository.
 Summary: Brief reason for approval ```
 
 ### For REJECT: ``` REJECT
+CONFIDENCE: HIGH | MEDIUM | LOW
+Reason: [one-line explanation]
 
 ✗ Critical issues found:
 
@@ -76,25 +80,7 @@ Summary: Commit blocked due to [main reason] ```
 - **Be proportional**: Don't block commits for minor style issues
 - **Be constructive**: Suggest better approaches when rejecting
 - **Be fast**: Review should complete in seconds, not minutes
-
-## Confidence Signal
-
-After your verdict, include a confidence assessment:
-
-```
-CONFIDENCE: HIGH | MEDIUM | LOW
-Reason: [why]
-```
-
-Output `CONFIDENCE: LOW` when:
-- Diff is large (>300 lines of changes)
-- Changes touch authentication or authorization logic
-- Database migrations or schema changes are present
-- Breaking API changes that affect multiple consumers
-- Complex algorithmic changes where correctness is hard to verify by inspection
-- You cannot fully assess the impact without seeing more of the codebase
-
-When confidence is LOW, the orchestrator will escalate to a deep code review with a stronger model for thorough analysis.
+- **ALWAYS** include `CONFIDENCE: HIGH|MEDIUM|LOW` on the second line of your response (immediately after APPROVE/REJECT). Output `LOW` when: diff is >300 lines, auth/authz logic is present, DB migrations or schema changes, breaking API changes, complex algorithms hard to verify by inspection, or you cannot fully assess impact from visible code. This line is mandatory and must appear BEFORE any findings or notes.
 
 ## Special Cases
 
