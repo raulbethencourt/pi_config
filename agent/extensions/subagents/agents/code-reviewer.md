@@ -77,6 +77,25 @@ Summary: Commit blocked due to [main reason] ```
 - **Be constructive**: Suggest better approaches when rejecting
 - **Be fast**: Review should complete in seconds, not minutes
 
+## Confidence Signal
+
+After your verdict, include a confidence assessment:
+
+```
+CONFIDENCE: HIGH | MEDIUM | LOW
+Reason: [why]
+```
+
+Output `CONFIDENCE: LOW` when:
+- Diff is large (>300 lines of changes)
+- Changes touch authentication or authorization logic
+- Database migrations or schema changes are present
+- Breaking API changes that affect multiple consumers
+- Complex algorithmic changes where correctness is hard to verify by inspection
+- You cannot fully assess the impact without seeing more of the codebase
+
+When confidence is LOW, the orchestrator will escalate to a deep code review with a stronger model for thorough analysis.
+
 ## Special Cases
 
 - **Auto-approve**: Typo fixes, documentation, simple refactors (if clearly safe), missing test coverage

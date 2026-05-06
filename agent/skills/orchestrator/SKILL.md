@@ -64,6 +64,48 @@ When a task spans multiple categories, decompose it into subtasks and dispatch t
 **Flow**: researcher → orchestrator extracts key info → worker (with researcher's findings as context)
 **Example**: Migrating from `node-fetch` v2 to v3 — researcher finds breaking changes, worker updates the code.
 
+### Planner → Critic → Worker Pipeline
+**When**: Non-trivial changes where the planner produced a design/plan. The critic validates the plan before execution begins.
+**Flow**: planner → critic (with plan text) → orchestrator evaluates verdict → worker(s)
+**Example**: Planner proposes a migration strategy — critic challenges assumptions about backward compatibility — plan is revised before workers execute.
+
+**Protocol:**
+1. Dispatch **planner** with the design task
+2. Dispatch **critic** with the planner's output as input
+3. Evaluate the critic's verdict:
+   - **PROCEED** → continue to worker(s) with the plan + critic's noted concerns as awareness context
+   - **REVISE** → re-dispatch planner with critic's warnings as constraints, then re-dispatch critic (max 1 revision loop)
+   - **BLOCK** → stop and escalate to user with both the plan and the critic's blockers
+4. Never skip the critic for planner-routed tasks unless the user explicitly requests speed over safety
+
+**When to skip the critic:**
+- Trivial changes that don't go through the planner (direct worker dispatch)
+- User explicitly says "just do it" or "skip review"
+- Pure documentation or config changes with no behavioral impact
+
+### Two-Stage Escalation Protocol
+
+**When**: Security audits or code reviews where the initial (cheaper) pass flags low confidence.
+**Applies to**: `security-auditor` → `security-auditor-deep`, `code-reviewer` → `code-reviewer-deep`
+
+**Flow**: 
+1. Dispatch the standard agent (`security-auditor` or `code-reviewer`) with the task
+2. Check the output for `CONFIDENCE: LOW`
+3. If confidence is HIGH or MEDIUM → accept the result as final
+4. If confidence is LOW → dispatch the `-deep` variant with:
+   - The original task/files
+   - The stage-1 findings as additional context
+5. The deep variant's verdict is final
+
+**Example**: Worker changes auth middleware → security-auditor runs (Sonnet) → flags `CONFIDENCE: LOW` because auth patterns detected → orchestrator dispatches `security-auditor-deep` (Opus) with same files + initial findings → deep audit produces final PASS/FAIL.
+
+**Rules:**
+- Always run stage-1 first (never skip to deep directly unless user explicitly requests it)
+- The deep variant receives both the original input AND stage-1 output
+- If stage-1 returns FAIL with HIGH confidence, do NOT escalate — the failure is already confirmed
+- Only escalate on LOW confidence (uncertain findings need deeper analysis)
+- Cost justification: most audits/reviews pass at stage-1 with HIGH confidence; escalation happens only ~20% of the time on security-sensitive changes
+
 ### Worker → Code-Reviewer Loop
 **When**: Making non-trivial code changes that need validation.
 **Flow**: worker → code-reviewer → if REJECT: worker (with reviewer feedback) → code-reviewer
@@ -87,25 +129,6 @@ When a task spans multiple categories, decompose it into subtasks and dispatch t
 - Reviewer flags a fundamental design issue (wrong approach, not fixable with patches)
 - Reviewer's issues require user input or clarification
 - In these cases, stop and escalate to the user with the reviewer's analysis
-
-### Planner → Critic → Worker Pipeline
-**When**: Non-trivial changes where the planner produced a design/plan. The critic validates the plan before execution begins.
-**Flow**: planner → critic (with plan text) → orchestrator evaluates verdict → worker(s)
-**Example**: Planner proposes a migration strategy — critic challenges assumptions about backward compatibility — plan is revised before workers execute.
-
-**Protocol:**
-1. Dispatch **planner** with the design task
-2. Dispatch **critic** with the planner's output as input
-3. Evaluate the critic's verdict:
-   - **PROCEED** → continue to worker(s) with the plan + critic's noted concerns as awareness context
-   - **REVISE** → re-dispatch planner with critic's warnings as constraints, then re-dispatch critic (max 1 revision loop)
-   - **BLOCK** → stop and escalate to user with both the plan and the critic's blockers
-4. Never skip the critic for planner-routed tasks unless the user explicitly requests speed over safety
-
-**When to skip the critic:**
-- Trivial changes that don't go through the planner (direct worker dispatch)
-- User explicitly says "just do it" or "skip review"
-- Pure documentation or config changes with no behavioral impact
 
 ### Planner → Worker Pipeline
 **When**: Non-trivial code change that requires design decisions (new feature, refactor, migration).
