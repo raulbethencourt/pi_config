@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Architecture planner — analyzes task requirements and codebase structure, designs implementation approach, produces step-by-step plan before coding begins
-tools: read, grep, find, ls, ast_grep, repo_map, workspace, repomix
+tools: read, grep, find, ls, ast_grep, repo_map, workspace, repomix, token_stats
 model: github-copilot/claude-opus-4.6
 ---
 
@@ -70,3 +70,12 @@ Do NOT use repomix for:
 - Structural overview only (use `repo_map`)
 - Pattern searching (use `ast_grep` or `grep`)
 - Entire large repositories (too many tokens — scope with --include)
+
+## TDD Output
+
+Your plans MUST include a "Testable Behaviors" section that specifies:
+- List observable behaviors the implementation must satisfy (as test descriptions)
+- Specify test type per behavior (unit, integration, E2E/curl)
+- For SugarCRM projects: indicate if PHPUnit or bns curl test is appropriate
+- The sugar-tester/tester will write failing tests from this list BEFORE the worker implements
+- Structure behaviors so tests can be written against the public interface without needing implementation details

@@ -327,6 +327,7 @@ Before adding new agents, optimize the existing team and build supporting infras
 
 ## Changelog
 
+- **2026-05-06**: TDD-First enforcement implemented. Replaced test-after flow with test-first (RED→GREEN→REFACTOR). Sugar-tester is primary test agent (80% SugarCRM work). Added RED Phase to sugar-tester and tester agents. Added "Testable Behaviors" output requirement to planner. Updated orchestrator with TDD Loop pattern. Soft enforcement — bypassable with "skip tests"/"spike"/"prototype"/"no tests". Updated AGENTS.md global workflows.
 - **2026-05-05**: Test Enforcement system implemented. Created `subagents/tools/test-config.ts` (auto-detects vitest/jest/phpunit/pytest/go/bats/mocha, stores at `.pi/test-config.json`). Added `test_config` tool to tester and sugar-tester agents. Added "Test Enforcement" section to orchestrator skill with detection flow, enforcement rules, and workspace integration. 230 tests passing.
 - **2026-05-05**: Phase 6 — Shared Workspace / Blackboard complete. Created `subagents/tools/workspace.ts` with read/write/append/clear/keys operations, dot-notation paths, per-CWD JSON persistence. Added workspace tool to all 9 agents.
 - **2026-05-05**: Phase 6 — Tree-sitter Repo Map complete. Created `subagents/tools/repo-map.ts` using ast-grep definition extraction + Node.js formatter. Added `repo_map` tool to scout and planner agents.
@@ -346,3 +347,54 @@ Before adding new agents, optimize the existing team and build supporting infras
 - **2026-05-02**: Phase 1 complete — created planner and tester agents. Updated orchestrator skill with Planner → Worker Pipeline, Worker → Tester Validation Loop, and updated Full Reconnaissance pattern.
 - **2026-05-02**: Evaluator-Optimizer Loop completed — added auto-retry protocol to Worker → Code-Reviewer pattern in orchestrator skill.
 - **2026-05-02**: Initial plan created. Current team documented. Research findings added. Roadmap defined with 3 phases.
+
+## Next Steps — Additional Observations on Subagent Model Strategy
+
+These are follow-up observations after the initial model assignment pass. They go beyond per-agent model choice and address composition, diversity, and routing.
+
+### 1. Vendor diversity / blind spots
+- 6 of 11 agents currently run on Claude. Planner → reviewer → auditor chains can repeat the same model's blind spots (missed vuln classes, hallucinated APIs).
+- Action: deliberately mix vendors on cross-checking pairs (planner vs. reviewer, worker vs. tester) to get adversarial diversity.
+
+### 2. Codex monoculture on execution side
+- `worker`, `refactorer`, `tester` all run on `gpt-5.3-codex`.
+- Risk: tests reinforce the worker's assumptions instead of challenging them.
+- Action: evaluate moving `tester` to Sonnet or Opus so test design is independent from implementation.
+
+### 3. Role-specific reconsiderations
+- **scout (`grok-code-fast-1`)**: speed is right, but weak code/repo comprehension can poison planner inputs. Evaluate a small Sonnet-tier or `gpt-5-mini`-tier alternative.
+- **refactorer (`gpt-5.3-codex`)**: refactoring needs behavior-preservation reasoning, not just code generation. Evaluate Sonnet/Opus for non-trivial refactors.
+- **doc-writer (`claude-sonnet-4.6`)**: routine docs could run on a lighter Haiku-tier / `gpt-5-mini`-tier model.
+- **planner (`claude-opus-4.6`)**: keep model, but explicitly enable extended thinking / reasoning mode where supported.
+
+### 4. Missing critic role
+- No dedicated agent whose job is to disagree with the planner.
+- Action: add a cheap "devil's advocate" critic (Sonnet-tier) that runs before execution to challenge plans.
+
+### 5. Static assignment vs. task-difficulty variance
+- Some agents (worker, code-reviewer) handle wildly different difficulty levels. Static models force overpaying or underdelivering.
+- Action: introduce a lightweight router skill that picks model based on task metadata (diff size, files touched, risk tags).
+
+### 6. Reasoning-effort tuning
+- Model choice is one lever; reasoning effort / thinking tokens is another, often cheaper.
+- Action: expose per-agent reasoning effort configuration and tune per role.
+
+### 7. Two-stage pipelines for high-cost-of-failure roles
+- For `security-auditor` and `code-reviewer`: run Sonnet first, auto-escalate to Opus when risk signals fire (auth, crypto, migrations, large diff, low confidence).
+
+### 8. Fallback chains
+- Define explicit per-agent fallback model order for rate limits / timeouts (e.g., Opus → Sonnet → Codex where sensible).
+
+### 9. Budget / SLA profiles
+- Add global profiles (`fast`, `balanced`, `strict`) that swap models per run.
+
+### 10. Quality telemetry loop
+- Track per-agent outcomes: fix success rate, regression rate, rework count, reviewer overrides.
+- Revisit model assignments monthly using data, not intuition.
+
+### Suggested order of work
+1. Add critic agent (low effort, high signal).
+2. Implement two-stage escalation for `security-auditor` and `code-reviewer`.
+3. Re-evaluate `tester`, `refactorer`, and `scout` model choices with small A/B runs.
+4. Build complexity-based router skill.
+5. Add telemetry + monthly review cadence.

@@ -39,3 +39,12 @@ explicit user confirmation
 
 - After making code changes, run the project's test suite if one exists
 - After fixing a bug, verify the fix addresses the original issue
+
+## TDD Workflow (Default)
+
+- Default development flow: green baseline → write failing tests → implement → verify green
+- Sugar projects (80% of work): use sugar-tester for test phases (PHPUnit, bns curl, bns run-batch)
+- Non-Sugar projects: use tester agent
+- Bypassable: user says "skip tests", "spike", "prototype", or "no tests"
+- Existing test suite must pass before new work starts (report failures, don't block silently)
+- Never dispatch worker for source code changes without failing tests existing first (unless bypassed)

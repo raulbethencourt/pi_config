@@ -20,6 +20,9 @@ mcp-npx-cache.json
 # Context-mode (runtime data, databases, session state)
 context-mode/
 
+# Runtime analytics DB (SQLite)
+data/
+
 # Python cache
 __pycache__/
 *.pyc

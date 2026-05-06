@@ -38,7 +38,8 @@ If any of those are fuzzy, you're not ready to implement.
 | Non-trivial code change requiring design decisions | planner first, then worker | Planner designs approach, worker executes the plan |
 | Create/edit/delete files, run commands, install packages | worker | Has read/write/edit/safe_bash |
 | Complex code change spanning multiple files | planner + scout first, then worker(s) | Planner designs, scout maps files, workers execute |
-| Validate code changes work correctly, write/run tests | tester | Writes tests, runs suites, reports diagnostics |
+| SugarCRM test creation/validation (PHPUnit, bns curl, bns run-batch) | sugar-tester | Has SugarCRM testing skill, knows bns tooling, primary for 80% of work |
+| Non-Sugar test creation/validation, write/run tests | tester | Writes tests, runs suites, reports diagnostics |
 | Review git diff, validate code quality | code-reviewer | Specialized for APPROVE/REJECT workflow |
 | Error analysis, test failure, stack trace debugging | debugger | Backward reasoning from symptoms to root cause, applies minimal fix |
 | Security scan, pre-commit vulnerability check | security-auditor | PASS/FAIL gate for secrets, injection, insecure dependencies |
@@ -132,13 +133,29 @@ When a task spans multiple categories, decompose it into subtasks and dispatch t
 
 ### Planner → Worker Pipeline
 **When**: Non-trivial code change that requires design decisions (new feature, refactor, migration).
-**Flow**: planner → orchestrator reviews plan → worker (with plan as context) → tester → if fail: worker (with diagnostics) → tester
+**Flow**: planner → orchestrator reviews plan → sugar-tester/tester (RED: write failing tests from plan) → worker (GREEN: make tests pass) → sugar-tester/tester (verify GREEN) → if fail: worker (with diagnostics) → re-verify
 **Example**: Adding authentication to an API — planner designs the approach (middleware, token validation, protected routes), worker implements step by step, tester validates.
 
-### Worker → Tester Validation Loop
-**When**: Any code change that should be verified with tests.
-**Flow**: worker → tester → if FAIL: worker (with tester diagnostics) → tester → max 2 retries
-**Example**: Worker adds a utility function — tester writes unit tests, runs them, reports 2 failures — worker fixes based on diagnostics — tester re-runs, all pass.
+### TDD Loop (Default Development Flow)
+
+**When**: Any feature or bug fix (default unless user bypasses).
+**Agent selection**:
+- SugarCRM project (has `custom/`, bns tools, Sugar structure) → **sugar-tester**
+- Everything else → **tester**
+
+**Flow**:
+1. Run existing test suite → report status (warn if failing, don't hard-block)
+2. Dispatch sugar-tester/tester: "Write failing tests for [feature/fix]. Confirm RED."
+3. Verify RED — test agent runs tests, confirms new tests fail for the right reason
+4. Dispatch worker: "Make these tests pass. Minimal code only." (pass test files as context)
+5. Dispatch sugar-tester/tester: "Run full relevant suite. Confirm GREEN."
+6. If FAIL → worker gets diagnostics → fix → re-run (max 2 retries)
+
+**Bypass**: User explicitly says "skip tests", "spike", "prototype", or "no tests" → go straight to worker.
+
+**Example (SugarCRM)**: User wants a new API endpoint for Accounts. Sugar-tester writes a failing .curl test + .matches file. Worker implements the endpoint. Sugar-tester runs `bns test --json --curl <file>.curl` — passes.
+
+**Example (TypeScript)**: User wants a utility function. Tester writes a failing vitest spec. Worker implements the function. Tester runs `vitest run <file>` — passes.
 
 ### Tester → Debugger → Tester Loop
 **When**: Tests fail and the failure requires root cause analysis beyond simple diagnostics.

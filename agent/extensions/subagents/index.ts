@@ -14,6 +14,7 @@ import { Container, Markdown, Spacer, Text, visibleWidth } from "@mariozechner/p
 import { Type } from "typebox";
 import * as formatUtils from "../shared/format.ts";
 import { extractTextContent } from "../shared/content.ts";
+import { initTelemetryDb, logRun } from "./telemetry.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -118,6 +119,7 @@ const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 	test_config: path.join(TOOLS_DIR, "test-config.ts"),
 	repomix: path.join(TOOLS_DIR, "repomix.ts"),
 	video_extract: path.join(EXT_BASE, "video-extract", "index.ts"),
+	token_stats: path.join(TOOLS_DIR, "token-stats.ts"),
 	youtube_search: path.join(EXT_BASE, "youtube-search", "index.ts"),
 	google_image_search: path.join(EXT_BASE, "google-image-search", "index.ts"),
 };
@@ -699,6 +701,8 @@ export default function (pi: ExtensionAPI) {
 	const config = loadConfig();
 	const maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 	agents = loadAgents();
+	initTelemetryDb();
+	const sessionId = `${process.pid}-${Date.now()}`;
 
 	pi.registerTool({
 		name: "subagent",
@@ -782,6 +786,7 @@ export default function (pi: ExtensionAPI) {
 					// Update allResults with the completed result so the UI reflects it immediately
 					allResults[idx] = result;
 					flushParallelUpdate();
+					logRun(result, t.cwd ?? cwd, sessionId);
 
 					return result;
 				});
@@ -820,6 +825,7 @@ export default function (pi: ExtensionAPI) {
 						details: { mode: "single" as const, results: [liveResult] },
 					});
 				});
+				logRun(result, params.cwd ?? cwd, sessionId);
 
 				const isError = result.exitCode !== 0 || !!result.progress.error;
 				return {
