@@ -14,7 +14,7 @@ import { Container, Markdown, Spacer, Text, visibleWidth } from "@mariozechner/p
 import { Type } from "typebox";
 import * as formatUtils from "../shared/format.ts";
 import { extractTextContent } from "../shared/content.ts";
-import { initTelemetryDb, logRun } from "./telemetry.ts";
+import { initTelemetryDb, logRun, logToolCalls } from "./telemetry.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -120,6 +120,7 @@ const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 	repomix: path.join(TOOLS_DIR, "repomix.ts"),
 	video_extract: path.join(EXT_BASE, "video-extract", "index.ts"),
 	token_stats: path.join(TOOLS_DIR, "token-stats.ts"),
+	git_inspect: path.join(TOOLS_DIR, "git-inspect.ts"),
 	youtube_search: path.join(EXT_BASE, "youtube-search", "index.ts"),
 	google_image_search: path.join(EXT_BASE, "google-image-search", "index.ts"),
 };
@@ -786,7 +787,14 @@ export default function (pi: ExtensionAPI) {
 					// Update allResults with the completed result so the UI reflects it immediately
 					allResults[idx] = result;
 					flushParallelUpdate();
-					logRun(result, t.cwd ?? cwd, sessionId);
+					const runId = logRun(result, t.cwd ?? cwd, sessionId);
+					const toolMap = new Map<string, number>();
+					for (const t of result.progress.recentTools) {
+						toolMap.set(t.tool, (toolMap.get(t.tool) || 0) + 1);
+					}
+					if (toolMap.size > 0 && runId != null) {
+						logToolCalls(runId, [...toolMap.entries()].map(([tool, count]) => ({ tool, count })));
+					}
 
 					return result;
 				});
@@ -825,7 +833,14 @@ export default function (pi: ExtensionAPI) {
 						details: { mode: "single" as const, results: [liveResult] },
 					});
 				});
-				logRun(result, params.cwd ?? cwd, sessionId);
+				const runId = logRun(result, params.cwd ?? cwd, sessionId);
+				const toolMap = new Map<string, number>();
+				for (const t of result.progress.recentTools) {
+					toolMap.set(t.tool, (toolMap.get(t.tool) || 0) + 1);
+				}
+				if (toolMap.size > 0 && runId != null) {
+					logToolCalls(runId, [...toolMap.entries()].map(([tool, count]) => ({ tool, count })));
+				}
 
 				const isError = result.exitCode !== 0 || !!result.progress.error;
 				return {

@@ -290,3 +290,118 @@ describe("token-stats-cmd extension", () => {
 		expect(out).toContain("░░░░░░░░░░░░░░░░░░░░░░░░");
 	});
 });
+
+describe("telemetry logToolCalls", () => {
+	beforeEach(() => {
+		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "token-stats-test-"));
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.doUnmock("node:os");
+		if (tempHome && fs.existsSync(tempHome)) {
+			fs.rmSync(tempHome, { recursive: true, force: true });
+		}
+	});
+
+	async function loadTelemetryModule() {
+		vi.resetModules();
+		vi.doMock("node:os", async () => {
+			const actual = await vi.importActual<typeof import("node:os")>("node:os");
+			return {
+				...actual,
+				homedir: () => tempHome,
+			};
+		});
+		return import("../extensions/subagents/telemetry.ts");
+	}
+
+	it("inserts tool call rows for a run", async () => {
+		const telemetry = (await loadTelemetryModule()) as any;
+		telemetry.initTelemetryDb();
+		telemetry.logRun(
+			{
+				agent: "tester",
+				task: "seed run",
+				exitCode: 0,
+				model: "m",
+				usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.01, turns: 1 },
+				progress: { durationMs: 1000 },
+			},
+			"/tmp/project",
+			"session-1",
+		);
+
+		const db = telemetry.getDb();
+		const run = db.prepare("SELECT id FROM runs ORDER BY id DESC LIMIT 1").get();
+		expect(run?.id).toBeTypeOf("number");
+
+		expect(typeof telemetry.logToolCalls).toBe("function");
+		telemetry.logToolCalls(run.id, [
+			{ tool: "read", count: 3 },
+			{ tool: "edit", count: 1 },
+		]);
+
+		const rows = db.prepare("SELECT run_id, tool, count FROM tool_calls ORDER BY tool ASC").all();
+		expect(rows).toEqual([
+			{ run_id: run.id, tool: "edit", count: 1 },
+			{ run_id: run.id, tool: "read", count: 3 },
+		]);
+	});
+});
+
+describe("/token_stats renders tool usage section", () => {
+	beforeEach(() => {
+		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "token-stats-test-"));
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.doUnmock("node:os");
+		if (tempHome && fs.existsSync(tempHome)) {
+			fs.rmSync(tempHome, { recursive: true, force: true });
+		}
+	});
+
+	it("shows a By Tool section when tool_calls data exists", async () => {
+		const dbDir = path.join(tempHome, ".pi", "data");
+		const dbPath = path.join(dbDir, "analytics.db");
+		fs.mkdirSync(dbDir, { recursive: true });
+
+		const { DatabaseSync } = await import("node:sqlite");
+		const db = new DatabaseSync(dbPath);
+		db.exec(RUNS_SCHEMA);
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS tool_calls (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				run_id INTEGER NOT NULL,
+				tool TEXT NOT NULL,
+				count INTEGER NOT NULL
+			);
+		`);
+
+		const now = new Date().toISOString();
+		db.prepare(`
+			INSERT INTO runs (
+				timestamp, session_id, agent, model, task_summary,
+				input_tokens, output_tokens, cache_read, cache_write,
+				cost_usd, turns, duration_ms, exit_code, cwd
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`).run(now, "session-tools", "agent", "model", "task", 100, 20, 0, 0, 0.1, 1, 1000, 0, "/tmp/project");
+
+		const run = db.prepare("SELECT id FROM runs ORDER BY id DESC LIMIT 1").get();
+		db.prepare("INSERT INTO tool_calls (run_id, tool, count) VALUES (?, ?, ?)").run(run.id, "read", 3);
+		db.prepare("INSERT INTO tool_calls (run_id, tool, count) VALUES (?, ?, ?)").run(run.id, "edit", 1);
+		db.close();
+
+		const handler = await loadTokenStatsHandler();
+		const rendered: string[][] = [];
+		await handler("all", createMockCtx(rendered));
+		const out = getRenderedText(rendered);
+
+		expect(out).toContain("By Tool");
+		expect(out).toContain("read");
+		expect(out).toContain("edit");
+	});
+});

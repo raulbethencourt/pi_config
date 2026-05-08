@@ -33,6 +33,15 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE INDEX IF NOT EXISTS idx_runs_timestamp ON runs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent);
 CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  tool TEXT NOT NULL,
+  count INTEGER DEFAULT 1,
+  FOREIGN KEY (run_id) REFERENCES runs(id)
+);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool);
 `;
 
 export function initTelemetryDb(): void {
@@ -61,8 +70,8 @@ export function logRun(
 	},
 	cwd: string,
 	sessionId: string,
-): void {
-	if (!db) return;
+): number | null {
+	if (!db) return null;
 	try {
 		const stmt = db.prepare(`
 			INSERT INTO runs (timestamp, session_id, agent, model, task_summary, input_tokens, output_tokens, cache_read, cache_write, cost_usd, turns, duration_ms, exit_code, cwd)
@@ -84,12 +93,30 @@ export function logRun(
 			result.exitCode,
 			cwd,
 		);
+		const row = db.prepare("SELECT last_insert_rowid() as id").get();
+		return row?.id ?? null;
 	} catch {
 		// Never crash the orchestrator for telemetry
+		return null;
 	}
 }
 
 export function getDb(): any {
 	if (!db) initTelemetryDb();
 	return db;
+}
+
+export function logToolCalls(
+	runId: number,
+	toolCalls: Array<{ tool: string; count: number }>,
+): void {
+	if (!db) return;
+	try {
+		const stmt = db.prepare(`INSERT INTO tool_calls (run_id, tool, count) VALUES (?, ?, ?)`);
+		for (const tc of toolCalls) {
+			stmt.run(runId, tc.tool, tc.count);
+		}
+	} catch {
+		// Never crash for telemetry
+	}
 }

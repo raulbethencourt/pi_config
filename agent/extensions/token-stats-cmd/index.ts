@@ -196,6 +196,33 @@ export default function (pi: ExtensionAPI) {
                     );
                 }
                 lines.push("");
+
+                // By Tool
+                const byTool = db.prepare(`
+                    SELECT
+                        tc.tool,
+                        SUM(tc.count) AS total_calls,
+                        COUNT(DISTINCT tc.run_id) AS runs_used
+                    FROM tool_calls tc
+                    JOIN runs r ON r.id = tc.run_id
+                    ${where.sql}
+                    GROUP BY tc.tool
+                    ORDER BY total_calls DESC
+                `).all(...where.params);
+
+                if (byTool.length > 0) {
+                    lines.push(heading("  By Tool"));
+                    lines.push("");
+                    lines.push(`  ${label(padRight("Tool", 20))} ${label(padLeft("Calls", 8))} ${label(padLeft("Runs", 6))}`);
+                    lines.push(`  ${dim("─".repeat(38))}`);
+                    for (const row of byTool) {
+                        lines.push(
+                            `  ${value(padRight(String(row.tool || "unknown"), 20))} ${value(padLeft(String(row.total_calls), 8))} ${value(padLeft(String(row.runs_used), 6))}`,
+                        );
+                    }
+                    lines.push("");
+                }
+
                 lines.push(`  ${dim("Use: /token_stats [today|week|month|all]")}`);
             } catch {
                 lines.push(`  ${dim("No telemetry data — unable to read analytics database")}`);

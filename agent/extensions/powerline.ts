@@ -20,12 +20,7 @@ import type { EditorTheme, TUI } from "@mariozechner/pi-tui";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { basename } from "node:path";
 
-// ── ANSI helpers ───────────────────────────────────────────────────────────────
-const R = "\x1b[0m";
-const f256 = (n: number, s: string) => `\x1b[38;5;${n}m${s}${R}`;
-const fRGB = (r: number, g: number, b: number, s: string) => `\x1b[38;2;${r};${g};${b}m${s}${R}`;
-const bold = (s: string) => `\x1b[1m${s}${R}`;
-const dim = (s: string) => `\x1b[2m${s}${R}`;
+type UiTheme = ExtensionContext["ui"]["theme"];
 
 // ── Icons (nerd-font vs ascii) ─────────────────────────────────────────────────
 const NERD = process.env["STARSHIP_NERD"] === "1";
@@ -78,31 +73,32 @@ function buildStatusLine(
 	isWorking: boolean,
 	spinnerIdx: number,
 	width: number,
+	theme: UiTheme,
 ): string {
 	const parts: string[] = [];
 
-	// 1. Pi icon + Directory  – bold cyan
+	// 1. Pi icon + Directory
 	const dir = basename(ctx.cwd) || ctx.cwd;
-	parts.push(fRGB(200, 120, 144, bold("󰚩  ")) + bold(f256(81, dir)));
+	parts.push(theme.fg("error", theme.bold("󰚩  ")) + theme.bold(theme.fg("accent", dir)));
 
-	// 2. Model  – blue
+	// 2. Model
 	const model = ctx.model?.id ?? "no model";
-	parts.push(f256(75, model));
+	parts.push(theme.fg("muted", model));
 
-	// 3. Thinking level  – green (hidden when "off")
+	// 3. Thinking level (hidden when "off")
 	const thinking = pi.getThinkingLevel?.() ?? "";
 	if (thinking && thinking !== "off") {
-		parts.push(f256(114, `think:${thinking}`));
+		parts.push(theme.fg("success", `think:${thinking}`));
 	}
 
-	// 4. Git branch + status  – purple branch, colored indicators
+	// 4. Git branch + status
 	if (git.branch) {
-		let gitStr = f256(141, BRANCH_ICON + git.branch);
+		let gitStr = theme.fg("borderAccent", BRANCH_ICON + git.branch);
 		const indicators: string[] = [];
-		if (git.staged > 0)    indicators.push(f256(114, `+${git.staged}`));   // green
-		if (git.modified > 0)  indicators.push(f256(221, `!${git.modified}`)); // yellow
-		if (git.untracked > 0) indicators.push(f256(204, `?${git.untracked}`));// red
-		if (indicators.length === 0) indicators.push(f256(114, "✓"));           // green
+		if (git.staged > 0) indicators.push(theme.fg("success", `+${git.staged}`));
+		if (git.modified > 0) indicators.push(theme.fg("warning", `!${git.modified}`));
+		if (git.untracked > 0) indicators.push(theme.fg("error", `?${git.untracked}`));
+		if (indicators.length === 0) indicators.push(theme.fg("success", "✓"));
 		gitStr += " " + indicators.join("");
 		parts.push(gitStr);
 	}
@@ -111,15 +107,15 @@ function buildStatusLine(
 	const usage = ctx.getContextUsage();
 	let right = "";
 	if (isWorking) {
-		right = f256(221, SPINNER[spinnerIdx] ?? "…");
+		right = theme.fg("warning", SPINNER[spinnerIdx] ?? "…");
 	} else if (usage?.percent !== null && usage?.percent !== undefined) {
 		const pct = Math.round(usage.percent);
-		right = pct >= 90 ? f256(204, `ctx ${pct}%`)
-		      : pct >= 70 ? f256(221, `ctx ${pct}%`)
-		      :              dim(`ctx ${pct}%`);
+		right = pct >= 90 ? theme.fg("error", `ctx ${pct}%`)
+		      : pct >= 70 ? theme.fg("warning", `ctx ${pct}%`)
+		      :              theme.fg("dim", `ctx ${pct}%`);
 	}
 
-	const left = parts.join(dim(SEPARATOR));
+	const left = parts.join(theme.fg("dim", SEPARATOR));
 	if (right) {
 		const lw = visibleWidth(left);
 		const rw = visibleWidth(right);
@@ -180,6 +176,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	function install(ctx: ExtensionContext) {
+		const uiTheme = ctx.ui.theme;
+
 		// Initial git fetch
 		void fetchGit(ctx.cwd, pi).then((g) => { git = g; activeTui?.requestRender(); });
 
@@ -197,7 +195,7 @@ export default function (pi: ExtensionAPI) {
 			activeTui = tui;
 			return {
 				render: (width: number) => [
-					buildStatusLine(ctx, pi, git, isWorking, spinnerIdx, width),
+					buildStatusLine(ctx, pi, git, isWorking, spinnerIdx, width, uiTheme),
 				],
 				invalidate: () => {},
 			};
@@ -228,8 +226,7 @@ export default function (pi: ExtensionAPI) {
 				// Replace the PADDING_X leading spaces of the first content line
 				// with the colored ❯ prompt (same visible width = 2)
 				const first = out[0]!;
-				const promptColor = isWorking ? "\x1b[1;33m" : "\x1b[1;32m"; // yellow / green
-				const prefix = `${promptColor}${PROMPT}\x1b[0m `;
+				const prefix = uiTheme.bold(uiTheme.fg(isWorking ? "warning" : "success", PROMPT)) + " ";
 
 				// Safety: only do the slice if the line starts with plain spaces
 				if (first.length >= PREFIX_VW) {

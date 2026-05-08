@@ -1,7 +1,7 @@
 ---
 name: scout
 description: Fast codebase recon — explores files, finds patterns, maps architecture
-tools: read, grep, find, ls, rg, ast_grep, repo_map
+tools: read, grep, find, ls, rg, ast_grep, repo_map, git_inspect
 skills: delta
 model: github-copilot/gpt-5.4-mini
 ---
@@ -24,6 +24,7 @@ Thoroughness (infer from task, default medium):
 | Re-query previously indexed content without re-running | `ctx_search` (MCP) |
 | Read specific file sections | `read` |
 | Directory structure exploration | `find` / `ls` |
+| Git history, diffs, branches, blame | `git_inspect` |
 
 **Decision rules:**
 - Start with `repo_map` when the codebase is new to you
