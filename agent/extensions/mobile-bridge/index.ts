@@ -1,6 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { networkInterfaces } from "node:os";
 import type {
     AgentEndEvent,
     ExtensionAPI,
@@ -17,6 +18,34 @@ const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 10;
 const KDECONNECT_PREFIX = "Pi finished: ";
 const MAX_NOTIFICATION_PREVIEW = 80;
+const KDECONNECT_TIMEOUT_MS = 5_000;
+const MAX_DEBUG_VALUE_LENGTH = 72;
+
+const KDECONNECT_DETECTION_COMMANDS = [
+    { command: "kdeconnect-cli", args: ["--list-devices", "--id-only"], parser: "idOnly" },
+    { command: "kdeconnect-cli", args: ["--list-devices"], parser: "list" },
+    { command: "/usr/bin/kdeconnect-cli", args: ["--list-devices", "--id-only"], parser: "idOnly" },
+    { command: "/usr/bin/kdeconnect-cli", args: ["--list-devices"], parser: "list" },
+] as const;
+
+type KdeConnectDetectionAttempt = {
+    command: string;
+    args: string[];
+    status: number | null;
+    stdout: string;
+    stderr: string;
+    error?: string;
+    parsedId?: string;
+};
+
+type KdeConnectDetection = {
+    deviceId?: string;
+    envDeviceId?: string;
+    attempts: KdeConnectDetectionAttempt[];
+};
+
+let cachedKdeConnectDetection: KdeConnectDetection | undefined;
+let hasCachedKdeConnectDetection = false;
 
 function extractAssistantText(event: AgentEndEvent): string | undefined {
     const messages = Array.isArray(event?.messages) ? event.messages : [];
@@ -61,9 +90,30 @@ function parsePort(value: string | undefined): number {
     return Number.isInteger(port) && port >= 0 ? port : DEFAULT_PORT;
 }
 
-function getStatusHost(): string {
-    const host = process.env.PI_MOBILE_BRIDGE_HOST?.trim();
-    return host || STATUS_HOST;
+export function resolveStatusHost(
+    envHost?: string,
+    interfaces?: ReturnType<typeof networkInterfaces>,
+): string {
+    const host = envHost?.trim();
+    if (host) {
+        return host;
+    }
+
+    const resolvedInterfaces = interfaces ?? networkInterfaces();
+
+    for (const entries of Object.values(resolvedInterfaces)) {
+        for (const entry of entries || []) {
+            if (!entry || entry.internal) {
+                continue;
+            }
+
+            if (entry.family === "IPv4" || entry.family === 4) {
+                return entry.address;
+            }
+        }
+    }
+
+    return STATUS_HOST;
 }
 
 function createNotificationPreview(text: string): string {
@@ -84,30 +134,208 @@ function createNotificationPreview(text: string): string {
     return `${KDECONNECT_PREFIX}${normalized.slice(0, available - 1).trimEnd()}…`;
 }
 
-function getKdeConnectDeviceId(): string | undefined {
-    const deviceId = process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID?.trim();
-    return deviceId || undefined;
+function normalizeSpawnOutput(value: unknown): string {
+    if (typeof value === "string") {
+        return value;
+    }
+
+    if (Buffer.isBuffer(value)) {
+        return value.toString("utf8");
+    }
+
+    return "";
 }
 
-function createKdeConnectShareArgs(url: string): string[] {
-    const deviceId = getKdeConnectDeviceId();
-    return deviceId ? ["--share", url, "-d", deviceId] : ["--share", url];
+function parseKdeConnectIdOnly(stdout: string): string | undefined {
+    return stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find(Boolean);
 }
 
-function createKdeConnectPingArgs(preview: string): string[] {
-    const deviceId = getKdeConnectDeviceId();
-    return deviceId ? ["--ping-msg", preview, "-d", deviceId] : ["--ping-msg", preview];
+function parseKdeConnectList(stdout: string): string | undefined {
+    for (const line of stdout.split(/\r?\n/)) {
+        const match = line.match(/:\s*([a-f0-9]+)\s+on\s+/i);
+        if (match?.[1]) {
+            return match[1];
+        }
+    }
+
+    return undefined;
+}
+
+function truncateDebugValue(value: string, maxLength = MAX_DEBUG_VALUE_LENGTH): string {
+    const normalized = value.replace(/\s+/g, " ").trim();
+    if (!normalized || normalized.length <= maxLength) {
+        return normalized;
+    }
+
+    return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+async function detectKdeConnectDevice(options?: { refresh?: boolean }): Promise<KdeConnectDetection> {
+    const envDeviceId = process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID?.trim();
+    if (envDeviceId) {
+        return {
+            deviceId: envDeviceId,
+            envDeviceId,
+            attempts: [],
+        };
+    }
+
+    if (!options?.refresh && hasCachedKdeConnectDetection) {
+        return cachedKdeConnectDetection || { attempts: [] };
+    }
+
+    const attempts: KdeConnectDetectionAttempt[] = [];
+
+    try {
+        const childProcess = await import("node:child_process");
+        const runSpawnSync = childProcess.spawnSync || spawnSync;
+
+        if (typeof runSpawnSync !== "function") {
+            attempts.push({
+                command: "spawnSync",
+                args: [],
+                status: null,
+                stdout: "",
+                stderr: "",
+                error: "spawnSync unavailable",
+            });
+            cachedKdeConnectDetection = { attempts };
+            hasCachedKdeConnectDetection = true;
+            return cachedKdeConnectDetection;
+        }
+
+        for (const attempt of KDECONNECT_DETECTION_COMMANDS) {
+            try {
+                const result = runSpawnSync(attempt.command, [...attempt.args], {
+                    encoding: "utf8",
+                    timeout: KDECONNECT_TIMEOUT_MS,
+                });
+                const stdout = normalizeSpawnOutput(result.stdout);
+                const stderr = normalizeSpawnOutput(result.stderr);
+                const parsedId = attempt.parser === "idOnly"
+                    ? parseKdeConnectIdOnly(stdout)
+                    : parseKdeConnectList(stdout);
+
+                attempts.push({
+                    command: attempt.command,
+                    args: [...attempt.args],
+                    status: typeof result.status === "number" ? result.status : null,
+                    stdout,
+                    stderr,
+                    error: result.error?.message,
+                    parsedId,
+                });
+
+                if (!result.error && result.status === 0 && parsedId) {
+                    cachedKdeConnectDetection = {
+                        deviceId: parsedId,
+                        attempts,
+                    };
+                    hasCachedKdeConnectDetection = true;
+                    return cachedKdeConnectDetection;
+                }
+            } catch (error) {
+                attempts.push({
+                    command: attempt.command,
+                    args: [...attempt.args],
+                    status: null,
+                    stdout: "",
+                    stderr: "",
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+    } catch (error) {
+        attempts.push({
+            command: "kdeconnect-detect",
+            args: [],
+            status: null,
+            stdout: "",
+            stderr: "",
+            error: error instanceof Error ? error.message : String(error),
+        });
+    }
+
+    cachedKdeConnectDetection = { attempts };
+    hasCachedKdeConnectDetection = true;
+    return cachedKdeConnectDetection;
+}
+
+async function getKdeConnectDeviceId(): Promise<string | undefined> {
+    const detection = await detectKdeConnectDevice();
+    return detection.deviceId;
+}
+
+function formatKdeDeviceInfo(deviceId: string | undefined): string {
+    return deviceId ? `kde: ${deviceId}` : "kde: no KDE device";
+}
+
+function formatKdeConnectDebug(detection: KdeConnectDetection): string {
+    const parts = [
+        "mobile devices debug — kde debug",
+        `PATH=${truncateDebugValue(process.env.PATH || "", 120)}`,
+    ];
+
+    if (detection.envDeviceId) {
+        parts.push(`env=${detection.envDeviceId}`);
+        parts.push("commands=skipped (env override)");
+    } else {
+        for (const attempt of detection.attempts) {
+            const command = `${attempt.command} ${attempt.args.join(" ")}`.trim();
+            const details = [
+                `${command || "command"} status=${attempt.status ?? "none"}`,
+            ];
+
+            if (attempt.error) {
+                details.push(`error=${truncateDebugValue(attempt.error)}`);
+            }
+            if (attempt.stdout) {
+                details.push(`stdout=${truncateDebugValue(attempt.stdout)}`);
+            }
+            if (attempt.stderr) {
+                details.push(`stderr=${truncateDebugValue(attempt.stderr)}`);
+            }
+            if (attempt.parsedId) {
+                details.push(`id=${attempt.parsedId}`);
+            }
+
+            parts.push(details.join(" "));
+        }
+
+        if (!detection.attempts.length) {
+            parts.push("commands=none");
+        }
+    }
+
+    parts.push(`final=${detection.deviceId || "none"}`);
+    return parts.join("; ");
+}
+
+async function createKdeConnectArgs(baseArgs: string[]): Promise<{ args: string[]; deviceId?: string }> {
+    const deviceId = await getKdeConnectDeviceId();
+    return {
+        args: deviceId ? [...baseArgs, "-d", deviceId] : baseArgs,
+        deviceId,
+    };
+}
+
+async function createKdeConnectShareArgs(url: string): Promise<{ args: string[]; deviceId?: string }> {
+    return createKdeConnectArgs(["--share", url]);
+}
+
+async function createKdeConnectPingArgs(preview: string): Promise<{ args: string[]; deviceId?: string }> {
+    return createKdeConnectArgs(["--ping-msg", preview]);
 }
 
 async function notifyKdeConnect(text: string) {
     try {
         const preview = createNotificationPreview(text);
         const childProcess = await import("node:child_process");
-        const child = (childProcess.spawn || spawn)(
-            "kdeconnect-cli",
-            createKdeConnectPingArgs(preview),
-            { stdio: "ignore" },
-        );
+        const { args } = await createKdeConnectPingArgs(preview);
+        const child = (childProcess.spawn || spawn)("kdeconnect-cli", args, { stdio: "ignore" });
         child.on("error", () => undefined);
         child.unref?.();
     } catch {
@@ -206,7 +434,7 @@ function createIndexHtml() {
 </html>`;
 }
 
-function notifyStatus(
+async function notifyStatus(
     ctx: ExtensionCommandContext,
     pendingSmoke: boolean,
     lastAnswer: string | undefined,
@@ -215,16 +443,28 @@ function notifyStatus(
 ) {
     const answerText = lastAnswer?.trim() ? lastAnswer : "no answer yet";
     const bridgeText = serverUrl ? `; bridge: ${serverUrl}` : "; bridge: offline";
+    const kdeText = formatKdeDeviceInfo(await getKdeConnectDeviceId());
     ctx.ui.notify(
-        `mobile status — pending smoke: ${pendingSmoke ? "yes" : "no"}; busy: ${busy ? "yes" : "no"}; last answer: ${answerText}${bridgeText}`,
+        `mobile status — pending smoke: ${pendingSmoke ? "yes" : "no"}; busy: ${busy ? "yes" : "no"}; last answer: ${answerText}${bridgeText}; ${kdeText}`,
     );
 }
 
+async function notifyDevices(ctx: ExtensionCommandContext) {
+    ctx.ui.notify(`mobile devices — ${formatKdeDeviceInfo(await getKdeConnectDeviceId())}`);
+}
+
+async function notifyDevicesDebug(ctx: ExtensionCommandContext) {
+    ctx.ui.notify(formatKdeConnectDebug(await detectKdeConnectDevice({ refresh: true })));
+}
+
 function notifyHelp(ctx: ExtensionCommandContext) {
-    ctx.ui.notify("mobile help — use /mobile smoke, /mobile status, or /mobile link");
+    ctx.ui.notify("mobile help — use /mobile smoke, /mobile status, /mobile devices, /mobile devices debug, or /mobile link");
 }
 
 export default function (pi: ExtensionAPI) {
+    cachedKdeConnectDetection = undefined;
+    hasCachedKdeConnectDetection = false;
+
     let pendingSmoke = false;
     let lastAnswer: string | undefined;
     let smokeCtx: ExtensionCommandContext | undefined;
@@ -235,19 +475,26 @@ export default function (pi: ExtensionAPI) {
     const token = randomBytes(32).toString("hex");
     const requestsByClient = new Map<string, number[]>();
 
-    const getServerUrl = () => (serverPort ? `http://${getStatusHost()}:${serverPort}/?token=${token}` : undefined);
+    const getServerUrl = () => (
+        serverPort
+            ? `http://${resolveStatusHost(process.env.PI_MOBILE_BRIDGE_HOST, networkInterfaces())}:${serverPort}/?token=${token}`
+            : undefined
+    );
 
     const shareBridgeLink = async (url: string) => {
         try {
             const childProcess = await import("node:child_process");
-            const child = (childProcess.spawn || spawn)("kdeconnect-cli", createKdeConnectShareArgs(url), {
+            const { args, deviceId } = await createKdeConnectShareArgs(url);
+            const child = (childProcess.spawn || spawn)("kdeconnect-cli", args, {
                 stdio: "ignore",
             });
             child.on("error", () => undefined);
             child.on("exit", () => undefined);
             child.unref?.();
+            return deviceId;
         } catch {
             // Ignore share failures.
+            return undefined;
         }
     };
 
@@ -365,10 +612,12 @@ export default function (pi: ExtensionAPI) {
     pi.registerCommand("mobile", {
         description: "Mobile bridge smoke helpers",
         handler: async (args, ctx) => {
-            const subcommand = args.trim().split(/\s+/).filter(Boolean)[0]?.toLowerCase();
+            const parts = args.trim().split(/\s+/).filter(Boolean).map((part) => part.toLowerCase());
+            const subcommand = parts[0];
+            const detail = parts[1];
 
             if (!subcommand || subcommand === "status") {
-                notifyStatus(ctx, pendingSmoke, lastAnswer, getServerUrl(), busy);
+                await notifyStatus(ctx, pendingSmoke, lastAnswer, getServerUrl(), busy);
                 return;
             }
 
@@ -380,6 +629,16 @@ export default function (pi: ExtensionAPI) {
                 return;
             }
 
+            if (subcommand === "devices") {
+                if (detail === "debug") {
+                    await notifyDevicesDebug(ctx);
+                    return;
+                }
+
+                await notifyDevices(ctx);
+                return;
+            }
+
             if (subcommand === "link") {
                 const serverUrl = getServerUrl();
                 if (!server?.listening || !serverUrl) {
@@ -387,8 +646,12 @@ export default function (pi: ExtensionAPI) {
                     return;
                 }
 
-                await shareBridgeLink(serverUrl);
-                ctx.ui.notify(`mobile link sent — ${serverUrl}`);
+                const deviceId = await shareBridgeLink(serverUrl);
+                ctx.ui.notify(
+                    deviceId
+                        ? `mobile link sent to ${deviceId} — ${serverUrl}`
+                        : `mobile link sent — ${serverUrl}; no KDE device`,
+                );
                 return;
             }
 
@@ -398,6 +661,7 @@ export default function (pi: ExtensionAPI) {
 
     pi.on("session_start", async (_event, _ctx) => {
         await startServer();
+        await getKdeConnectDeviceId();
     });
 
     pi.on("session_shutdown", async () => {
