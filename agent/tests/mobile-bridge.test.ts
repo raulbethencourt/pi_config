@@ -85,6 +85,7 @@ describe("Mobile Bridge Extension", () => {
     vi.doUnmock('node:child_process');
     delete process.env.PI_MOBILE_BRIDGE_HOST;
     delete process.env.PI_MOBILE_BRIDGE_PORT;
+    delete process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID;
   });
 
   it("registers 'mobile' slash command", () => {
@@ -726,6 +727,252 @@ describe("Mobile Bridge Extension", () => {
       await mobileCommand!.handler("", mockCtx);
 
       expect(mockNotify).toHaveBeenCalled();
+    });
+  });
+
+  describe("/mobile link", () => {
+    const startServer = async () => {
+      const sessionStartHandlers = registeredHooks.get("session_start");
+      expect(sessionStartHandlers).toBeDefined();
+      
+      const mockNotify = vi.fn();
+      const mockCtx: ExtensionCommandContext = {
+        ui: { notify: mockNotify },
+        cwd: "/test",
+        model: "test-model",
+      } as any;
+
+      await sessionStartHandlers![0]({}, mockCtx);
+      return mockNotify;
+    };
+
+    beforeEach(() => {
+      process.env.PI_MOBILE_BRIDGE_PORT = "0";
+      process.env.PI_MOBILE_BRIDGE_HOST = "192.168.1.30";
+    });
+
+    it("sends bridge URL to phone via kdeconnect-cli with --share flag", async () => {
+      await startServer();
+
+      const mobileCommand = registeredCommands.get("mobile");
+      const mockNotify = vi.fn();
+      const mockCtx: ExtensionCommandContext = {
+        ui: { notify: mockNotify },
+        cwd: "/test",
+        model: "test-model",
+      } as any;
+
+      await mobileCommand!.handler("link", mockCtx);
+
+      // Assert kdeconnect-cli was spawned
+      expect(spawnMock).toHaveBeenCalledWith(
+        "kdeconnect-cli",
+        expect.arrayContaining(["--share"]),
+        expect.objectContaining({ stdio: "ignore" })
+      );
+
+      // Verify the URL format
+      const spawnCall = spawnMock.mock.calls.find(
+        (call: any[]) => call[0] === "kdeconnect-cli" && call[1].includes("--share")
+      );
+      expect(spawnCall).toBeDefined();
+      
+      const args = spawnCall[1];
+      const shareIndex = args.indexOf("--share");
+      expect(shareIndex).toBeGreaterThanOrEqual(0);
+      
+      const url = args[shareIndex + 1];
+      expect(url).toMatch(/^http:\/\/192\.168\.1\.30:\d+\/\?token=[a-f0-9]+$/);
+    });
+
+    it("uses safe spawn with arg array not shell exec", async () => {
+      await startServer();
+
+      const mobileCommand = registeredCommands.get("mobile");
+      const mockNotify = vi.fn();
+      const mockCtx: ExtensionCommandContext = {
+        ui: { notify: mockNotify },
+        cwd: "/test",
+        model: "test-model",
+      } as any;
+
+      await mobileCommand!.handler("link", mockCtx);
+
+      // Verify spawn was called with args array, not shell string
+      const spawnCall = spawnMock.mock.calls.find(
+        (call: any[]) => call[0] === "kdeconnect-cli"
+      );
+      expect(spawnCall).toBeDefined();
+      expect(Array.isArray(spawnCall[1])).toBe(true);
+      
+      // Verify stdio: "ignore" option
+      expect(spawnCall[2]).toHaveProperty("stdio", "ignore");
+    });
+
+    it("notifies user that link was sent", async () => {
+      await startServer();
+
+      const mobileCommand = registeredCommands.get("mobile");
+      const mockNotify = vi.fn();
+      const mockCtx: ExtensionCommandContext = {
+        ui: { notify: mockNotify },
+        cwd: "/test",
+        model: "test-model",
+      } as any;
+
+      await mobileCommand!.handler("link", mockCtx);
+
+      expect(mockNotify).toHaveBeenCalledWith(
+        expect.stringMatching(/sent|link/i)
+      );
+    });
+
+    it("does not spawn if server is not running", async () => {
+      // Don't start server
+      const mobileCommand = registeredCommands.get("mobile");
+      const mockNotify = vi.fn();
+      const mockCtx: ExtensionCommandContext = {
+        ui: { notify: mockNotify },
+        cwd: "/test",
+        model: "test-model",
+      } as any;
+
+      await mobileCommand!.handler("link", mockCtx);
+
+      // Should not have spawned kdeconnect-cli
+      const kdeconnectSpawn = spawnMock.mock.calls.find(
+        (call: any[]) => call[0] === "kdeconnect-cli" && call[1].includes("--share")
+      );
+      expect(kdeconnectSpawn).toBeUndefined();
+
+      // Should notify that bridge is not running
+      expect(mockNotify).toHaveBeenCalledWith(
+        expect.stringMatching(/not running|bridge.*not.*running/i)
+      );
+    });
+
+    it("does not throw if spawn errors", async () => {
+      await startServer();
+
+      // Make spawn throw error
+      spawnMock.mockImplementationOnce((command: string, args: string[]) => {
+        const mockChild = new EventEmitter() as any;
+        mockChild.stdout = new EventEmitter();
+        mockChild.stderr = new EventEmitter();
+        mockChild.kill = vi.fn();
+        
+        setTimeout(() => mockChild.emit('error', new Error('kdeconnect-cli not found')), 10);
+        
+        return mockChild;
+      });
+
+      const mobileCommand = registeredCommands.get("mobile");
+      const mockNotify = vi.fn();
+      const mockCtx: ExtensionCommandContext = {
+        ui: { notify: mockNotify },
+        cwd: "/test",
+        model: "test-model",
+      } as any;
+
+      // Should not throw
+      await expect(
+        mobileCommand!.handler("link", mockCtx)
+      ).resolves.not.toThrow();
+    });
+
+    it("does not throw if kdeconnect-cli exits nonzero", async () => {
+      await startServer();
+
+      // Make spawn exit with error code
+      spawnMock.mockImplementationOnce((command: string, args: string[]) => {
+        const mockChild = new EventEmitter() as any;
+        mockChild.stdout = new EventEmitter();
+        mockChild.stderr = new EventEmitter();
+        mockChild.kill = vi.fn();
+        
+        setTimeout(() => mockChild.emit('exit', 1), 10);
+        
+        return mockChild;
+      });
+
+      const mobileCommand = registeredCommands.get("mobile");
+      const mockNotify = vi.fn();
+      const mockCtx: ExtensionCommandContext = {
+        ui: { notify: mockNotify },
+        cwd: "/test",
+        model: "test-model",
+      } as any;
+
+      // Should not throw
+      await expect(
+        mobileCommand!.handler("link", mockCtx)
+      ).resolves.not.toThrow();
+    });
+
+    it("includes -d <device_id> when PI_MOBILE_BRIDGE_KDE_DEVICE_ID is set", async () => {
+      process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID = "a648fd25583644aa9c89057dfb068171";
+      await startServer();
+
+      const mobileCommand = registeredCommands.get("mobile");
+      const mockNotify = vi.fn();
+      const mockCtx: ExtensionCommandContext = {
+        ui: { notify: mockNotify },
+        cwd: "/test",
+        model: "test-model",
+      } as any;
+
+      await mobileCommand!.handler("link", mockCtx);
+
+      // Assert kdeconnect-cli was spawned with -d flag and device ID
+      const spawnCall = spawnMock.mock.calls.find(
+        (call: any[]) => call[0] === "kdeconnect-cli" && call[1].includes("--share")
+      );
+      expect(spawnCall).toBeDefined();
+
+      const args = spawnCall[1];
+      expect(args).toContain("--share");
+      expect(args).toContain("-d");
+      expect(args).toContain("a648fd25583644aa9c89057dfb068171");
+
+      // Verify the URL is still present
+      const shareIndex = args.indexOf("--share");
+      const url = args[shareIndex + 1];
+      expect(url).toMatch(/^http:\/\/192\.168\.1\.30:\d+\/\?token=[a-f0-9]+$/);
+    });
+  });
+
+  describe("KDE Connect device ID handling", () => {
+    it("includes -d <device_id> in agent_end notification when PI_MOBILE_BRIDGE_KDE_DEVICE_ID is set", async () => {
+      process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID = "a648fd25583644aa9c89057dfb068171";
+
+      const agentEndHandlers = registeredHooks.get("agent_end");
+      expect(agentEndHandlers).toBeDefined();
+
+      const event = {
+        messages: [
+          { role: "assistant", content: "This is the assistant's response." },
+        ],
+      };
+
+      await agentEndHandlers![0](event);
+
+      // Assert kdeconnect-cli was spawned with -d flag and device ID
+      const spawnCall = spawnMock.mock.calls.find(
+        (call: any[]) => call[0] === "kdeconnect-cli" && call[1].includes("--ping-msg")
+      );
+      expect(spawnCall).toBeDefined();
+
+      const args = spawnCall[1];
+      expect(args).toContain("--ping-msg");
+      expect(args).toContain("-d");
+      expect(args).toContain("a648fd25583644aa9c89057dfb068171");
+
+      // Verify the preview is still present
+      const previewIndex = args.indexOf("--ping-msg") + 1;
+      expect(previewIndex).toBeGreaterThan(0);
+      const preview = args[previewIndex];
+      expect(preview).toBeTruthy();
+      expect(preview.length).toBeGreaterThan(0);
     });
   });
 });

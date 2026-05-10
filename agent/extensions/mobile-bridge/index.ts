@@ -84,12 +84,28 @@ function createNotificationPreview(text: string): string {
     return `${KDECONNECT_PREFIX}${normalized.slice(0, available - 1).trimEnd()}…`;
 }
 
+function getKdeConnectDeviceId(): string | undefined {
+    const deviceId = process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID?.trim();
+    return deviceId || undefined;
+}
+
+function createKdeConnectShareArgs(url: string): string[] {
+    const deviceId = getKdeConnectDeviceId();
+    return deviceId ? ["--share", url, "-d", deviceId] : ["--share", url];
+}
+
+function createKdeConnectPingArgs(preview: string): string[] {
+    const deviceId = getKdeConnectDeviceId();
+    return deviceId ? ["--ping-msg", preview, "-d", deviceId] : ["--ping-msg", preview];
+}
+
 async function notifyKdeConnect(text: string) {
     try {
+        const preview = createNotificationPreview(text);
         const childProcess = await import("node:child_process");
         const child = (childProcess.spawn || spawn)(
             "kdeconnect-cli",
-            ["--ping-msg", createNotificationPreview(text)],
+            createKdeConnectPingArgs(preview),
             { stdio: "ignore" },
         );
         child.on("error", () => undefined);
@@ -205,7 +221,7 @@ function notifyStatus(
 }
 
 function notifyHelp(ctx: ExtensionCommandContext) {
-    ctx.ui.notify("mobile help — use /mobile smoke or /mobile status");
+    ctx.ui.notify("mobile help — use /mobile smoke, /mobile status, or /mobile link");
 }
 
 export default function (pi: ExtensionAPI) {
@@ -220,6 +236,20 @@ export default function (pi: ExtensionAPI) {
     const requestsByClient = new Map<string, number[]>();
 
     const getServerUrl = () => (serverPort ? `http://${getStatusHost()}:${serverPort}/?token=${token}` : undefined);
+
+    const shareBridgeLink = async (url: string) => {
+        try {
+            const childProcess = await import("node:child_process");
+            const child = (childProcess.spawn || spawn)("kdeconnect-cli", createKdeConnectShareArgs(url), {
+                stdio: "ignore",
+            });
+            child.on("error", () => undefined);
+            child.on("exit", () => undefined);
+            child.unref?.();
+        } catch {
+            // Ignore share failures.
+        }
+    };
 
     const closeServer = async () => {
         if (!server) {
@@ -347,6 +377,18 @@ export default function (pi: ExtensionAPI) {
                 pendingSmoke = true;
                 pi.sendUserMessage(SMOKE_PROMPT);
                 ctx.ui.notify("mobile smoke started — waiting for assistant reply");
+                return;
+            }
+
+            if (subcommand === "link") {
+                const serverUrl = getServerUrl();
+                if (!server?.listening || !serverUrl) {
+                    ctx.ui.notify("mobile link not running — start a session first");
+                    return;
+                }
+
+                await shareBridgeLink(serverUrl);
+                ctx.ui.notify(`mobile link sent — ${serverUrl}`);
                 return;
             }
 
