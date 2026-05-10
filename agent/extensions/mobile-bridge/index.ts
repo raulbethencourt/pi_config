@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type {
@@ -12,6 +13,10 @@ const DEFAULT_PORT = 4321;
 const MAX_ANSWERS = 10;
 const SERVER_HOST = "0.0.0.0";
 const STATUS_HOST = "127.0.0.1";
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 10;
+const KDECONNECT_PREFIX = "Pi finished: ";
+const MAX_NOTIFICATION_PREVIEW = 80;
 
 function extractAssistantText(event: AgentEndEvent): string | undefined {
     const messages = Array.isArray(event?.messages) ? event.messages : [];
@@ -54,6 +59,63 @@ function parsePort(value: string | undefined): number {
 
     const port = Number.parseInt(value, 10);
     return Number.isInteger(port) && port >= 0 ? port : DEFAULT_PORT;
+}
+
+function getStatusHost(): string {
+    const host = process.env.PI_MOBILE_BRIDGE_HOST?.trim();
+    return host || STATUS_HOST;
+}
+
+function createNotificationPreview(text: string): string {
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (!normalized) {
+        return KDECONNECT_PREFIX.trimEnd();
+    }
+
+    const available = MAX_NOTIFICATION_PREVIEW - KDECONNECT_PREFIX.length;
+    if (normalized.length <= available) {
+        return `${KDECONNECT_PREFIX}${normalized}`;
+    }
+
+    if (available <= 1) {
+        return `${KDECONNECT_PREFIX.slice(0, Math.max(0, MAX_NOTIFICATION_PREVIEW - 1))}…`;
+    }
+
+    return `${KDECONNECT_PREFIX}${normalized.slice(0, available - 1).trimEnd()}…`;
+}
+
+async function notifyKdeConnect(text: string) {
+    try {
+        const childProcess = await import("node:child_process");
+        const child = (childProcess.spawn || spawn)(
+            "kdeconnect-cli",
+            ["--ping-msg", createNotificationPreview(text)],
+            { stdio: "ignore" },
+        );
+        child.on("error", () => undefined);
+        child.unref?.();
+    } catch {
+        // Ignore notification failures.
+    }
+}
+
+function consumeRateLimit(
+    requestsByClient: Map<string, number[]>,
+    clientIp: string,
+    now = Date.now(),
+): boolean {
+    const recentRequests = (requestsByClient.get(clientIp) || []).filter(
+        (timestamp) => now - timestamp < RATE_LIMIT_WINDOW_MS,
+    );
+
+    if (recentRequests.length >= RATE_LIMIT_MAX_REQUESTS) {
+        requestsByClient.set(clientIp, recentRequests);
+        return false;
+    }
+
+    recentRequests.push(now);
+    requestsByClient.set(clientIp, recentRequests);
+    return true;
 }
 
 function json(response: ServerResponse, statusCode: number, body: unknown) {
@@ -155,8 +217,9 @@ export default function (pi: ExtensionAPI) {
     let server: Server | undefined;
     let serverPort: number | undefined;
     const token = randomBytes(32).toString("hex");
+    const requestsByClient = new Map<string, number[]>();
 
-    const getServerUrl = () => (serverPort ? `http://${STATUS_HOST}:${serverPort}/?token=${token}` : undefined);
+    const getServerUrl = () => (serverPort ? `http://${getStatusHost()}:${serverPort}/?token=${token}` : undefined);
 
     const closeServer = async () => {
         if (!server) {
@@ -215,6 +278,12 @@ export default function (pi: ExtensionAPI) {
 
                     if (typeof body.message !== "string" || !body.message.trim()) {
                         json(response, 400, { error: "message required" });
+                        return;
+                    }
+
+                    const clientIp = request.socket.remoteAddress || "unknown";
+                    if (!consumeRateLimit(requestsByClient, clientIp)) {
+                        json(response, 429, { error: "rate limit exceeded" });
                         return;
                     }
 
@@ -307,6 +376,7 @@ export default function (pi: ExtensionAPI) {
 
         lastAnswer = text;
         answers = [...answers, text].slice(-MAX_ANSWERS);
+        await notifyKdeConnect(text);
 
         if (!pendingSmoke || !text.includes(SMOKE_TOKEN)) {
             return;

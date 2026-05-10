@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import { EventEmitter } from "events";
 
 /**
  * Phase 0 Mobile Bridge Tests
@@ -24,11 +25,32 @@ describe("Mobile Bridge Extension", () => {
   let registeredCommands: Map<string, { description: string; handler: Function }>;
   let registeredHooks: Map<string, Function[]>;
   let mobileBridgeModule: any;
+  let spawnMock: any;
+  let mockChildProcesses: any[];
 
   beforeEach(async () => {
     // Reset mocks
     registeredCommands = new Map();
     registeredHooks = new Map();
+    mockChildProcesses = [];
+    
+    // Mock child_process spawn for KDE Connect tests
+    spawnMock = vi.fn((command: string, args: string[]) => {
+      const mockChild = new EventEmitter() as any;
+      mockChild.stdout = new EventEmitter();
+      mockChild.stderr = new EventEmitter();
+      mockChild.kill = vi.fn();
+      mockChildProcesses.push({ command, args, child: mockChild });
+      
+      // Simulate successful spawn by default
+      setTimeout(() => mockChild.emit('exit', 0), 10);
+      
+      return mockChild;
+    });
+    
+    vi.doMock('node:child_process', () => ({
+      spawn: spawnMock,
+    }));
 
     // Mock pi SDK
     mockPi = {
@@ -52,6 +74,17 @@ describe("Mobile Bridge Extension", () => {
       // Expected to fail in RED phase - extension doesn't exist yet
       mobileBridgeModule = null;
     }
+  });
+
+  afterEach(() => {
+    // Clean up any lingering child processes
+    mockChildProcesses.forEach(({ child }) => {
+      if (child.kill) child.kill();
+    });
+    vi.clearAllMocks();
+    vi.doUnmock('node:child_process');
+    delete process.env.PI_MOBILE_BRIDGE_HOST;
+    delete process.env.PI_MOBILE_BRIDGE_PORT;
   });
 
   it("registers 'mobile' slash command", () => {
@@ -286,6 +319,162 @@ describe("Mobile Bridge Extension", () => {
       // Should not throw and should indicate no messages yet
       expect(mockNotify).toHaveBeenCalled();
     });
+
+    it("prefers LAN IP URL when PI_MOBILE_BRIDGE_HOST is set", async () => {
+      // Set LAN IP override
+      process.env.PI_MOBILE_BRIDGE_HOST = "192.168.1.20";
+      process.env.PI_MOBILE_BRIDGE_PORT = "0";
+
+      // Reinitialize extension with new env
+      registeredCommands.clear();
+      registeredHooks.clear();
+      const freshModule = await import("../extensions/mobile-bridge/index.ts?t=" + Date.now());
+      freshModule.default(mockPi);
+
+      // Start server
+      const sessionStartHandlers = registeredHooks.get("session_start");
+      const mockNotify = vi.fn();
+      const mockCtx: ExtensionCommandContext = {
+        ui: { notify: mockNotify },
+        cwd: "/test",
+        model: "test-model",
+      } as any;
+
+      await sessionStartHandlers![0]({}, mockCtx);
+
+      // Check status output
+      const mobileCommand = registeredCommands.get("mobile");
+      mockNotify.mockClear();
+      await mobileCommand!.handler("status", mockCtx);
+
+      // Should contain LAN IP in URL
+      const statusCall = mockNotify.mock.calls.find((call) =>
+        call[0].includes("http://")
+      );
+      expect(statusCall).toBeDefined();
+      expect(statusCall[0]).toMatch(/http:\/\/192\.168\.1\.20:\d+\/\?token=[a-f0-9]+/);
+    });
+  });
+
+  describe("KDE Connect Notifications", () => {
+    it("sends notification via kdeconnect-cli spawn on agent_end with assistant answer", async () => {
+      const agentEndHandlers = registeredHooks.get("agent_end");
+      expect(agentEndHandlers).toBeDefined();
+
+      const event = {
+        messages: [
+          { role: "assistant", content: "This is the assistant's response." },
+        ],
+      };
+
+      await agentEndHandlers![0](event);
+
+      // Should have spawned kdeconnect-cli
+      expect(spawnMock).toHaveBeenCalledWith(
+        "kdeconnect-cli",
+        expect.arrayContaining(["--ping-msg"]),
+        expect.any(Object)
+      );
+    });
+
+    it("truncates notification preview to ~80 characters", async () => {
+      const agentEndHandlers = registeredHooks.get("agent_end");
+      
+      const longResponse = "A".repeat(200); // 200 char response
+      const event = {
+        messages: [
+          { role: "assistant", content: longResponse },
+        ],
+      };
+
+      await agentEndHandlers![0](event);
+
+      // Check that the preview argument is truncated
+      expect(spawnMock).toHaveBeenCalled();
+      const spawnCall = spawnMock.mock.calls.find(
+        (call: any[]) => call[0] === "kdeconnect-cli"
+      );
+      expect(spawnCall).toBeDefined();
+      
+      const args = spawnCall[1];
+      const previewIndex = args.indexOf("--ping-msg") + 1;
+      expect(previewIndex).toBeGreaterThan(0);
+      
+      const preview = args[previewIndex];
+      expect(preview.length).toBeLessThanOrEqual(85); // Allow for ellipsis
+      expect(preview.length).toBeGreaterThan(0);
+    });
+
+    it("passes notification as argument array not shell string", async () => {
+      const agentEndHandlers = registeredHooks.get("agent_end");
+      
+      const event = {
+        messages: [
+          { role: "assistant", content: "Test; echo 'injection'; rm -rf /" },
+        ],
+      };
+
+      await agentEndHandlers![0](event);
+
+      // Verify spawn was called with args array, not exec string
+      expect(spawnMock).toHaveBeenCalledWith(
+        "kdeconnect-cli",
+        expect.any(Array),
+        expect.any(Object)
+      );
+      
+      // Verify the dangerous chars are in the array element, not interpreted
+      const spawnCall = spawnMock.mock.calls[0];
+      expect(Array.isArray(spawnCall[1])).toBe(true);
+    });
+
+    it("does not throw when kdeconnect-cli spawn errors", async () => {
+      // Make spawn emit error
+      spawnMock.mockImplementation((command: string, args: string[]) => {
+        const mockChild = new EventEmitter() as any;
+        mockChild.stdout = new EventEmitter();
+        mockChild.stderr = new EventEmitter();
+        mockChild.kill = vi.fn();
+        
+        setTimeout(() => mockChild.emit('error', new Error('Command not found')), 10);
+        
+        return mockChild;
+      });
+
+      const agentEndHandlers = registeredHooks.get("agent_end");
+      const event = {
+        messages: [
+          { role: "assistant", content: "Test response" },
+        ],
+      };
+
+      // Should not throw
+      await expect(agentEndHandlers![0](event)).resolves.not.toThrow();
+    });
+
+    it("does not throw when kdeconnect-cli exits nonzero", async () => {
+      // Make spawn exit with error code
+      spawnMock.mockImplementation((command: string, args: string[]) => {
+        const mockChild = new EventEmitter() as any;
+        mockChild.stdout = new EventEmitter();
+        mockChild.stderr = new EventEmitter();
+        mockChild.kill = vi.fn();
+        
+        setTimeout(() => mockChild.emit('exit', 1), 10);
+        
+        return mockChild;
+      });
+
+      const agentEndHandlers = registeredHooks.get("agent_end");
+      const event = {
+        messages: [
+          { role: "assistant", content: "Test response" },
+        ],
+      };
+
+      // Should not throw
+      await expect(agentEndHandlers![0](event)).resolves.not.toThrow();
+    });
   });
 
   describe("Phase 0: HTTP Server", () => {
@@ -478,6 +667,34 @@ describe("Mobile Bridge Extension", () => {
 
       // Verify server is closed - fetch should fail
       await expect(fetch(`${serverUrl}/health`)).rejects.toThrow();
+    });
+
+    it("POST /send rate limiting: returns 429 after 10 requests from same client", async () => {
+      await startServer();
+
+      // Make 10 successful requests
+      for (let i = 0; i < 10; i++) {
+        const response = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, message: `message ${i}` }),
+        });
+        expect(response.ok).toBe(true);
+      }
+
+      // 11th request should be rate limited
+      const response = await fetch(`${serverUrl}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, message: "rate limited" }),
+      });
+
+      expect(response.status).toBe(429);
+      const data = await response.json();
+      expect(data).toHaveProperty("error");
+      expect(data.error).toMatch(/rate limit/i);
+
+      await shutdownServer();
     });
   });
 
