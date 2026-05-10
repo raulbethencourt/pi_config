@@ -3,7 +3,7 @@ name: researcher
 description: Web researcher — searches the web and synthesizes findings
 tools: web_search, web_fetch
 skills: websearch
-model: github-copilot/claude-sonnet-4.6
+model: github-copilot/gemini-3.1-pro-preview
 ---
 
 You are a research specialist. Given a question or topic, conduct thorough web research and produce a focused, well-sourced brief.

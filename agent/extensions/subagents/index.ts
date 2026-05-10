@@ -15,6 +15,7 @@ import { Type } from "typebox";
 import * as formatUtils from "../shared/format.ts";
 import { extractTextContent } from "../shared/content.ts";
 import { initTelemetryDb, logRun, logToolCalls } from "./telemetry.ts";
+import { loadRouting, resolveModel } from "./routing.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -108,6 +109,7 @@ function resolveContextModeExtension(): string | null {
 }
 
 const CONTEXT_MODE_EXTENSION = resolveContextModeExtension();
+const ROUTING_CONFIG = loadRouting(path.dirname(AGENTS_DIR));
 
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 	web_search: path.join(EXT_BASE, "web-search", "index.ts"),
@@ -319,7 +321,8 @@ async function buildPiArgs(
 		args.push("--extension", CONTEXT_MODE_EXTENSION);
 	}
 
-	args.push("--models", agent.model);
+	const { model: routedModel, tier: complexityTier } = resolveModel(agent.model, agent.name, task, ROUTING_CONFIG);
+	args.push("--models", routedModel);
 	args.push("--append-system-prompt", promptPath);
 
 	// Handle long tasks by writing to file

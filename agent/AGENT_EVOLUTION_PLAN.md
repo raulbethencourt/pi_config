@@ -128,16 +128,20 @@ Before adding new agents, optimize the existing team and build supporting infras
     - Code-reviewer → needs strong reasoning + attention to detail
   - Document choices with rationale
 - **Status**: [x] Complete — see model assignments below
-  - scout: gpt-5.4-mini (fast and cheap, but with better code comprehension than grok)
-  - researcher: claude-opus-4.6 (1M ctx, best reasoning)
-  - planner: claude-opus-4.6 (architecture decisions need best reasoning)
-  - worker: gpt-5.3-codex (purpose-built for code generation, upgraded from 5.1 which failed in JSON mode)
-  - tester: gpt-5.3-codex (purpose-built for code, upgraded from 5.1 which failed in JSON mode)
-  - debugger: claude-opus-4.6 (deepest reasoning for root cause analysis)
-  - security-auditor: claude-sonnet-4.6 (balance of thoroughness and speed)
-  - doc-writer: claude-sonnet-4.6 (writing quality)
-  - refactorer: gpt-5.3-codex (code restructuring, upgraded from 5.1 which failed in JSON mode)
-  - code-reviewer: claude-opus-4.6 (strong reasoning for subtle bugs)
+  - scout: gpt-5.4-mini (fast recon, routed to gpt-5.4 for complex tasks)
+  - researcher: gemini-3.1-pro-preview (Google long-context synthesis + third vendor perspective)
+  - planner: claude-sonnet-4.6 (default planning; escalate to opus-4.7 only when explicitly needed)
+  - worker: gpt-5.4 (fast code gen, routed: simple→gpt-5.4-mini; no automatic gpt-5.5)
+  - tester: claude-sonnet-4.5 (adversarial vendor diversity vs OpenAI worker, routed to sonnet-4.6 for complex)
+  - sugar-tester: claude-sonnet-4.5 (same rationale as tester)
+  - debugger: gpt-5.4 (OpenAI for vendor diversity in debugger→tester loop; escalate to opus-4.7 for hard failures)
+  - security-auditor: claude-sonnet-4.6 (stage-1 scan, escalates to opus-4.7 deep)
+  - security-auditor-deep: claude-opus-4.7 (escalation tier)
+  - doc-writer: claude-sonnet-4.5 (fast formulaic writing)
+  - refactorer: gpt-5.4 (code restructuring; no automatic gpt-5.5)
+  - code-reviewer: claude-sonnet-4.6 (stage-1 review, escalates to opus-4.7 deep)
+  - code-reviewer-deep: claude-opus-4.7 (escalation tier)
+  - critic: gemini-3.1-pro-preview (Google adversarial perspective against Anthropic planner)
 
 #### 🔧 Tools & Skills Audit
 
@@ -246,9 +250,15 @@ Before adding new agents, optimize the existing team and build supporting infras
 
 #### 🧠 Persistent Memory (Three-Tier)
 
-- **Goal**: Cross-session knowledge persistence — working memory, session memory, persistent memory
-- **Implementation**: Memory MCP server + per-project memory bank files
-- **Status**: [ ] Pending
+- **Goal**: Cross-session knowledge persistence — accumulated architectural knowledge, tried approaches, failure patterns, codebase evolution over weeks/months
+- **Implementation**: Evaluate options before building:
+  1. **Graphiti** (getzep/graphiti) — temporal knowledge graph, MCP-compatible, agent-native
+  2. **Native SQLite** — lightweight fact store with FTS5 search, managed alongside analytics.db
+  3. **Memory MCP server** — structured memory with semantic retrieval
+  - Separate from session continuity — this is long-term knowledge, not single-session state
+  - Needs: schema design, retrieval strategy, staleness/expiry handling, token budget impact analysis
+- **Note**: Pi's built-in session system already persists conversation history, tool results, and branch state in JSONL files. Persistent memory should complement (not duplicate) this.
+- **Status**: [ ] Pending — evaluate Graphiti vs native before implementation
 
 #### 📋 Shared Workspace / Blackboard
 
@@ -297,6 +307,39 @@ Before adding new agents, optimize the existing team and build supporting infras
   4. Optional later: HTML dashboard (ctx-insight style)
 - **Status**: [x] Complete — SQLite telemetry in `subagents/telemetry.ts`, `token_stats` tool in `subagents/tools/token-stats.ts`, `/token_stats` slash command in `extensions/token-stats-cmd/index.ts` (scrollable TUI dashboard with summary, by-agent, by-model, by-day bar chart, top 5 expensive runs, by-project)
 
+### Phase 7: Company Vault Integration
+
+#### 📚 Company Knowledge Base (`~/vaults/TECHNIQUE/`)
+
+- **Goal**: Integrate the company Obsidian vault as a live knowledge base — agents automatically search it for context and write documentation back after significant work
+- **Vault**: `~/vaults/TECHNIQUE/` — Obsidian markdown, French, YAML frontmatter (id, aliases, tags), wikilinks, callout blocks, `media_*` attachment folders
+- **Folder structure**: `SUGAR CRM/`, `HOSTING/`, `DEVS TOOLS & MORE/`, `DEPLOIMENT/`, `FRESHWORKS/`, `MAJ/`, `Méthode de travail/`, `WORK IN PROGRESS/`, `NEW CRM/`
+
+##### READ side — Vault Search
+- **Search tools**: Graphify MCP (`query_graph`, `get_node`, `get_neighbors`, `shortest_path`) + Obsidian CLI (read notes, query backlinks)
+- **Agents with access**: Scout + Planner (read-only)
+- **Trigger**: Automatic — orchestrator dispatches vault search before any task touching vault topics (SugarCRM, hosting, deployment, PHP, integrations, tooling, work methods)
+- **Pi's role**: Consumer only — search infrastructure (indexing, graph builds) managed separately
+
+##### WRITE side — Auto-Documentation
+- **Agent**: Doc-writer only (single point of control, no other agent writes to vault)
+- **Method**: Direct file write to `~/vaults/TECHNIQUE/`
+- **Placement**: Auto-inferred from vault folder structure + content topic
+- **Format**: Match existing vault conventions — French titles, YAML frontmatter, wikilinks `[[note-name]]`, callout blocks `>[!IMPORTANT]`, kebab-case or space-separated filenames
+- **Trigger**: Post-task auto-doc — orchestrator dispatches doc-writer after significant work (SugarCRM upgrades, server config changes, deployment procedures, etc.)
+
+##### Implementation Tasks
+1. **Vault skill** — create `skills/vault/SKILL.md` teaching agents the vault structure, folder mapping, note format conventions, and search tool usage
+   - Status: [ ] Pending
+2. **Orchestrator update** — add vault search step to task pipelines (pre-task for read, post-task for write) in `skills/orchestrator/SKILL.md`
+   - Status: [ ] Pending
+3. **MCP tool registration** — connect Graphify MCP server + Obsidian CLI as available tools for scout and planner agents
+   - Status: [ ] Pending
+4. **Doc-writer update** — add vault write permissions, note template with YAML frontmatter, folder inference logic to `agents/doc-writer.md`
+   - Status: [ ] Pending
+5. **Integration tests** — verify read path (search → results) and write path (task → doc created in correct folder with correct format)
+   - Status: [ ] Pending
+
 ## Future Patterns to Explore
 
 ### Persistent Memory Agent
@@ -327,6 +370,12 @@ Before adding new agents, optimize the existing team and build supporting infras
 
 ## Changelog
 
+- **2026-05-10**: Gemini adoption. Verified `github-copilot/gemini-3-flash-preview` and `github-copilot/gemini-3.1-pro-preview` work. Moved critic + researcher to `gemini-3.1-pro-preview` for third-vendor perspective and likely better price stability. Free opencode models (`minimax-m2.5-free`, `nemotron-3-super-free`) verified working but reserved for non-critical future helpers.
+- **2026-05-10**: Vendor diversity pass. Moved researcher and debugger from claude-sonnet-4.6 to gpt-5.4 (OpenAI). Split is now 6 OpenAI / 8 Anthropic (was 4/10). All cross-checking pairs now have vendor diversity.
+- **2026-05-10**: Cost-aware routing revision. Removed automatic GPT-5.5 routing (too expensive without real cost telemetry). Moved planner/debugger defaults back to claude-sonnet-4.6; Opus 4.7 reserved for explicit/deep escalation only. Future work: estimated-cost telemetry + budget/SLA profiles.
+- **2026-05-10**: Model re-evaluation + complexity router complete. Reassigned 11 agent models: worker→gpt-5.4, tester/sugar-tester→claude-sonnet-4.5 (vendor diversity), planner/debugger→claude-opus-4.7, doc-writer→claude-sonnet-4.5, refactorer→gpt-5.4, deep variants→opus-4.7. Gemini models unavailable on GitHub Copilot. Created `routing.ts` + `routing.json` — complexity-based model routing for worker/tester/refactorer/scout (simple/standard/complex tiers). 13 new tests. Wired into subagents runtime via `resolveModel()`.
+- **2026-05-10**: Removed Session Continuity (`/save` + `/resume`) — redundant with pi's built-in session system (JSONL persistence of conversation, tool results, branch state). Expanded Persistent Memory (Three-Tier) with evaluation criteria.
+- **2026-05-10**: Added Phase 7 — Company Vault Integration (`~/vaults/TECHNIQUE/`). READ: Scout + Planner search via Graphify MCP + Obsidian CLI (automatic, consumer-only). WRITE: Doc-writer only, direct file write, auto-placed, matching vault conventions (French, YAML frontmatter, wikilinks). Triggered post-task for significant work. 5 implementation tasks defined.
 - **2026-05-06**: Observability & Token Analytics complete. Created `/token_stats` slash command (`extensions/token-stats-cmd/index.ts`) — scrollable TUI dashboard showing summary, per-agent/model/day/project breakdowns, ASCII bar chart, top 5 expensive runs. Supports period argument (today/week/month/all). Auto-discovered by pi extension loader.
 - **2026-05-06**: Model upgrades: Changed scout model from grok-code-fast-1 to gpt-5.4-mini to improve codebase comprehension while maintaining parallel fan-out speed.
 - **2026-05-06**: TDD-First enforcement implemented. Replaced test-after flow with test-first (RED→GREEN→REFACTOR). Sugar-tester is primary test agent (80% SugarCRM work). Added RED Phase to sugar-tester and tester agents. Added "Testable Behaviors" output requirement to planner. Updated orchestrator with TDD Loop pattern. Soft enforcement — bypassable with "skip tests"/"spike"/"prototype"/"no tests". Updated AGENTS.md global workflows.
@@ -397,6 +446,6 @@ These are follow-up observations after the initial model assignment pass. They g
 ### Suggested order of work
 1. ~~Add critic agent (low effort, high signal).~~ ✅ Complete
 2. ~~Implement two-stage escalation for `security-auditor` and `code-reviewer`.~~ ✅ Complete
-3. Re-evaluate `tester`, `refactorer`, and `scout` model choices with small A/B runs.
-4. Build complexity-based router skill.
+3. ~~Re-evaluate `tester`, `refactorer`, and `scout` model choices with small A/B runs.~~ ✅ Complete
+4. ~~Build complexity-based router skill.~~ ✅ Complete
 5. ~~Add telemetry + monthly review cadence.~~ ✅ Complete

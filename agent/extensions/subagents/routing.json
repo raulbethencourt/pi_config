@@ -1,0 +1,15 @@
+{
+	"worker": {
+		"simple": "github-copilot/gpt-5.4-mini",
+		"complex": "github-copilot/gpt-5.4"
+	},
+	"tester": {
+		"complex": "github-copilot/claude-sonnet-4.6"
+	},
+	"refactorer": {
+		"complex": "github-copilot/gpt-5.4"
+	},
+	"scout": {
+		"complex": "github-copilot/gpt-5.4"
+	}
+}
