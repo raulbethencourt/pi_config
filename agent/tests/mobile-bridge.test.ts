@@ -2222,4 +2222,743 @@ describe("Mobile Bridge Extension", () => {
       expect(debugNotification).toMatch(/PATH.*=/);
     });
   });
+
+  describe("RED: Phase 1 Multi-Instance Support", () => {
+    /**
+     * Tests for Phase 1 multi-instance registry:
+     * 1. Dynamic port allocation when default 4321 is busy
+     * 2. Registry write on session_start
+     * 3. Registry heartbeat updates lastSeen
+     * 4. Registry cleanup on session_shutdown
+     * 5. GET /instances?token=... returns live instances
+     * 6. GET /instances rejects invalid token with 401
+     */
+
+    let tmpDir: string;
+
+    beforeEach(async () => {
+      // Create temp directory for registry tests
+      const fs = await import("node:fs/promises");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      
+      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-mobile-bridge-test-"));
+      process.env.PI_MOBILE_BRIDGE_REGISTRY_DIR = tmpDir;
+      process.env.PI_MOBILE_BRIDGE_PORT = "0";
+      process.env.PI_MOBILE_BRIDGE_HEARTBEAT_MS = "50";
+      process.env.PI_MOBILE_BRIDGE_STALE_MS = "100";
+    });
+
+    afterEach(async () => {
+      // Cleanup temp directory
+      if (tmpDir) {
+        const fs = await import("node:fs/promises");
+        try {
+          await fs.rm(tmpDir, { recursive: true, force: true });
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+      delete process.env.PI_MOBILE_BRIDGE_REGISTRY_DIR;
+      delete process.env.PI_MOBILE_BRIDGE_HEARTBEAT_MS;
+      delete process.env.PI_MOBILE_BRIDGE_STALE_MS;
+    });
+
+    describe("Dynamic Port Allocation", () => {
+      it("RED: starts on different port when default 4321 is occupied", async () => {
+        const { findAvailablePort } = await import("../extensions/mobile-bridge/index.ts");
+        const busyPort = await findAvailablePort(4500);
+
+        const http = await import("node:http");
+        const firstServer = http.createServer();
+        
+        await new Promise<void>((resolve, reject) => {
+          firstServer.once("error", reject);
+          firstServer.listen(busyPort, "0.0.0.0", () => {
+            firstServer.off("error", reject);
+            resolve();
+          });
+        });
+
+        try {
+          process.env.PI_MOBILE_BRIDGE_PORT = String(busyPort);
+          
+          // Reinitialize extension
+          registeredCommands.clear();
+          registeredHooks.clear();
+          const freshModule = await import("../extensions/mobile-bridge/index.ts?t=" + Date.now());
+          freshModule.default(mockPi);
+
+          // Start mobile bridge server
+          const sessionStartHandlers = registeredHooks.get("session_start");
+          const mockNotify = vi.fn();
+          const mockCtx: ExtensionCommandContext = {
+            ui: { notify: mockNotify },
+            cwd: "/test",
+            model: "test-model",
+          } as any;
+
+          await sessionStartHandlers![0]({}, mockCtx);
+
+          // Check status to get actual port
+          const mobileCommand = registeredCommands.get("mobile");
+          mockNotify.mockClear();
+          await mobileCommand!.handler("status", mockCtx);
+
+          const statusCall = mockNotify.mock.calls.find((call) =>
+            call[0].includes("http://")
+          );
+          expect(statusCall).toBeDefined();
+          
+          const urlMatch = statusCall[0].match(/http:\/\/[^\s]+:(\d+)\/\?token=/);
+          expect(urlMatch).not.toBeNull();
+          
+          const bridgePort = parseInt(urlMatch[1], 10);
+          
+          expect(bridgePort).not.toBe(busyPort);
+          expect(bridgePort).toBeGreaterThan(busyPort);
+          expect(bridgePort).toBeLessThan(busyPort + 100);
+
+          // Cleanup
+          const sessionShutdownHandlers = registeredHooks.get("session_shutdown");
+          await sessionShutdownHandlers![0]({}, mockCtx);
+        } finally {
+          // Cleanup first server
+          await new Promise<void>((resolve) => {
+            firstServer.close(() => resolve());
+          });
+        }
+      });
+
+      it("RED: findAvailablePort helper returns next available port when startPort is busy", async () => {
+        // Import the helper function
+        let findAvailablePort: (startPort: number) => Promise<number>;
+        try {
+          const module = await import("../extensions/mobile-bridge/index.ts");
+          findAvailablePort = module.findAvailablePort;
+        } catch {
+          // Expected to fail in RED phase
+          findAvailablePort = undefined as any;
+        }
+
+        expect(findAvailablePort).toBeDefined();
+        expect(typeof findAvailablePort).toBe("function");
+
+        const busyPort = await findAvailablePort(4500);
+
+        const http = await import("node:http");
+        const server = http.createServer();
+        
+        await new Promise<void>((resolve, reject) => {
+          server.once("error", reject);
+          server.listen(busyPort, "0.0.0.0", () => {
+            server.off("error", reject);
+            resolve();
+          });
+        });
+
+        try {
+          const availablePort = await findAvailablePort(busyPort);
+          expect(availablePort).toBeGreaterThan(busyPort);
+          expect(availablePort).toBeLessThan(busyPort + 100);
+        } finally {
+          await new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          });
+        }
+      });
+
+      it("RED: findAvailablePort returns startPort when available", async () => {
+        let findAvailablePort: (startPort: number) => Promise<number>;
+        try {
+          const module = await import("../extensions/mobile-bridge/index.ts");
+          findAvailablePort = module.findAvailablePort;
+        } catch {
+          findAvailablePort = undefined as any;
+        }
+
+        expect(findAvailablePort).toBeDefined();
+        expect(typeof findAvailablePort).toBe("function");
+
+        const candidate = await findAvailablePort(4600);
+        expect(await findAvailablePort(candidate)).toBe(candidate);
+      });
+    });
+
+    describe("Registry File Management", () => {
+      it("RED: creates registry file on session_start with id, label, cwd, port, lastSeen", async () => {
+        // Reinitialize extension
+        registeredCommands.clear();
+        registeredHooks.clear();
+        const freshModule = await import("../extensions/mobile-bridge/index.ts?t=" + Date.now());
+        freshModule.default(mockPi);
+
+        const sessionStartHandlers = registeredHooks.get("session_start");
+        const mockNotify = vi.fn();
+        const mockCtx: ExtensionCommandContext = {
+          ui: { notify: mockNotify },
+          cwd: "/home/user/project",
+          model: "test-model",
+        } as any;
+
+        await sessionStartHandlers![0]({}, mockCtx);
+
+        // Check registry directory exists
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        
+        const registryDir = path.join(tmpDir, "instances");
+        const dirExists = await fs.access(registryDir).then(() => true).catch(() => false);
+        expect(dirExists).toBe(true);
+
+        // Check registry file exists (should be <id>.json)
+        const files = await fs.readdir(registryDir);
+        expect(files.length).toBe(1);
+        expect(files[0]).toMatch(/^[a-f0-9-]+\.json$/);
+
+        // Read and validate registry file content
+        const registryPath = path.join(registryDir, files[0]);
+        const content = await fs.readFile(registryPath, "utf-8");
+        const registry = JSON.parse(content);
+
+        expect(registry).toHaveProperty("id");
+        expect(registry).toHaveProperty("label");
+        expect(registry).toHaveProperty("cwd", "/home/user/project");
+        expect(registry).toHaveProperty("port");
+        expect(registry).toHaveProperty("lastSeen");
+        
+        expect(typeof registry.id).toBe("string");
+        expect(typeof registry.label).toBe("string");
+        expect(typeof registry.port).toBe("number");
+        expect(registry.port).toBeGreaterThan(0);
+        expect(typeof registry.lastSeen).toBe("number");
+        expect(registry.lastSeen).toBeGreaterThan(0);
+
+        // Token should NOT be in registry
+        expect(registry).not.toHaveProperty("token");
+
+        // Cleanup
+        const sessionShutdownHandlers = registeredHooks.get("session_shutdown");
+        await sessionShutdownHandlers![0]({}, mockCtx);
+      });
+
+      it("RED: updates lastSeen via heartbeat mechanism", async () => {
+        // Reinitialize extension
+        registeredCommands.clear();
+        registeredHooks.clear();
+        const freshModule = await import("../extensions/mobile-bridge/index.ts?t=" + Date.now());
+        freshModule.default(mockPi);
+
+        const sessionStartHandlers = registeredHooks.get("session_start");
+        const mockNotify = vi.fn();
+        const mockCtx: ExtensionCommandContext = {
+          ui: { notify: mockNotify },
+          cwd: "/home/user/project",
+          model: "test-model",
+        } as any;
+
+        await sessionStartHandlers![0]({}, mockCtx);
+
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        
+        const registryDir = path.join(tmpDir, "instances");
+        const files = await fs.readdir(registryDir);
+        const registryPath = path.join(registryDir, files[0]);
+
+        // Read initial lastSeen
+        const initialContent = await fs.readFile(registryPath, "utf-8");
+        const initialRegistry = JSON.parse(initialContent);
+        const initialLastSeen = initialRegistry.lastSeen;
+
+        // Wait for heartbeat interval (50ms + buffer)
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        // Read updated lastSeen
+        const updatedContent = await fs.readFile(registryPath, "utf-8");
+        const updatedRegistry = JSON.parse(updatedContent);
+        const updatedLastSeen = updatedRegistry.lastSeen;
+
+        // lastSeen should have been updated
+        expect(updatedLastSeen).toBeGreaterThan(initialLastSeen);
+
+        // Cleanup
+        const sessionShutdownHandlers = registeredHooks.get("session_shutdown");
+        await sessionShutdownHandlers![0]({}, mockCtx);
+      });
+
+      it("RED: removes registry file on session_shutdown", async () => {
+        // Reinitialize extension
+        registeredCommands.clear();
+        registeredHooks.clear();
+        const freshModule = await import("../extensions/mobile-bridge/index.ts?t=" + Date.now());
+        freshModule.default(mockPi);
+
+        const sessionStartHandlers = registeredHooks.get("session_start");
+        const mockNotify = vi.fn();
+        const mockCtx: ExtensionCommandContext = {
+          ui: { notify: mockNotify },
+          cwd: "/home/user/project",
+          model: "test-model",
+        } as any;
+
+        await sessionStartHandlers![0]({}, mockCtx);
+
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        
+        const registryDir = path.join(tmpDir, "instances");
+        const filesBeforeShutdown = await fs.readdir(registryDir);
+        expect(filesBeforeShutdown.length).toBe(1);
+
+        // Shutdown
+        const sessionShutdownHandlers = registeredHooks.get("session_shutdown");
+        await sessionShutdownHandlers![0]({}, mockCtx);
+
+        // Registry file should be removed
+        const filesAfterShutdown = await fs.readdir(registryDir);
+        expect(filesAfterShutdown.length).toBe(0);
+      });
+
+      it("RED: multiple instances create separate registry files", async () => {
+        // Start first instance
+        registeredCommands.clear();
+        registeredHooks.clear();
+        const module1 = await import("../extensions/mobile-bridge/index.ts?t=" + Date.now() + ".1");
+        const mockPi1 = {
+          registerCommand: vi.fn((name: string, opts: any) => {}),
+          on: vi.fn((event: string, handler: Function) => {}),
+          sendUserMessage: vi.fn(),
+        } as any;
+        module1.default(mockPi1);
+
+        const mockNotify1 = vi.fn();
+        const mockCtx1: ExtensionCommandContext = {
+          ui: { notify: mockNotify1 },
+          cwd: "/home/user/project1",
+          model: "test-model",
+        } as any;
+
+        // Get session_start handler from mockPi1.on calls
+        const sessionStartCall1 = mockPi1.on.mock.calls.find((call: any[]) => call[0] === "session_start");
+        expect(sessionStartCall1).toBeDefined();
+        await sessionStartCall1[1]({}, mockCtx1);
+
+        // Start second instance
+        const module2 = await import("../extensions/mobile-bridge/index.ts?t=" + Date.now() + ".2");
+        const mockPi2 = {
+          registerCommand: vi.fn((name: string, opts: any) => {}),
+          on: vi.fn((event: string, handler: Function) => {}),
+          sendUserMessage: vi.fn(),
+        } as any;
+        module2.default(mockPi2);
+
+        const mockNotify2 = vi.fn();
+        const mockCtx2: ExtensionCommandContext = {
+          ui: { notify: mockNotify2 },
+          cwd: "/home/user/project2",
+          model: "test-model",
+        } as any;
+
+        const sessionStartCall2 = mockPi2.on.mock.calls.find((call: any[]) => call[0] === "session_start");
+        expect(sessionStartCall2).toBeDefined();
+        await sessionStartCall2[1]({}, mockCtx2);
+
+        // Check registry files
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        
+        const registryDir = path.join(tmpDir, "instances");
+        const files = await fs.readdir(registryDir);
+        expect(files.length).toBe(2);
+
+        // Read both registry files and verify different cwds
+        const registry1 = JSON.parse(await fs.readFile(path.join(registryDir, files[0]), "utf-8"));
+        const registry2 = JSON.parse(await fs.readFile(path.join(registryDir, files[1]), "utf-8"));
+
+        const cwds = [registry1.cwd, registry2.cwd].sort();
+        expect(cwds).toEqual(["/home/user/project1", "/home/user/project2"]);
+
+        // Cleanup
+        const sessionShutdownCall1 = mockPi1.on.mock.calls.find((call: any[]) => call[0] === "session_shutdown");
+        const sessionShutdownCall2 = mockPi2.on.mock.calls.find((call: any[]) => call[0] === "session_shutdown");
+        await sessionShutdownCall1[1]({}, mockCtx1);
+        await sessionShutdownCall2[1]({}, mockCtx2);
+      });
+    });
+
+    describe("GET /instances Endpoint", () => {
+      let serverUrl: string;
+      let token: string;
+      let port: number;
+
+      const startServer = async () => {
+        registeredCommands.clear();
+        registeredHooks.clear();
+        const freshModule = await import("../extensions/mobile-bridge/index.ts?t=" + Date.now());
+        freshModule.default(mockPi);
+
+        const sessionStartHandlers = registeredHooks.get("session_start");
+        const mockNotify = vi.fn();
+        const mockCtx: ExtensionCommandContext = {
+          ui: { notify: mockNotify },
+          cwd: "/home/user/project",
+          model: "test-model",
+        } as any;
+
+        await sessionStartHandlers![0]({}, mockCtx);
+
+        // Get URL and token from status
+        const mobileCommand = registeredCommands.get("mobile");
+        await mobileCommand!.handler("status", mockCtx);
+
+        const statusCall = mockNotify.mock.calls.find((call) =>
+          call[0].includes("http://")
+        );
+        expect(statusCall).toBeDefined();
+        
+        const urlMatch = statusCall[0].match(/http:\/\/[^\s]+:(\d+)\/\?token=([a-f0-9]+)/);
+        expect(urlMatch).not.toBeNull();
+        
+        port = parseInt(urlMatch[1], 10);
+        token = urlMatch[2];
+        serverUrl = `http://127.0.0.1:${port}`;
+      };
+
+      const shutdownServer = async () => {
+        const sessionShutdownHandlers = registeredHooks.get("session_shutdown");
+        if (sessionShutdownHandlers) {
+          const mockCtx: ExtensionCommandContext = {
+            ui: { notify: vi.fn() },
+            cwd: "/test",
+            model: "test-model",
+          } as any;
+          await sessionShutdownHandlers[0]({}, mockCtx);
+        }
+      };
+
+      it("RED: GET /instances with valid token returns live instances", async () => {
+        await startServer();
+
+        const response = await fetch(`${serverUrl}/instances?token=${token}`);
+        expect(response.ok).toBe(true);
+        
+        const data = await response.json();
+        expect(data).toHaveProperty("instances");
+        expect(Array.isArray(data.instances)).toBe(true);
+        expect(data.instances.length).toBeGreaterThan(0);
+
+        // Verify instance structure
+        const instance = data.instances[0];
+        expect(instance).toHaveProperty("id");
+        expect(instance).toHaveProperty("label");
+        expect(instance).toHaveProperty("cwd");
+        expect(instance).toHaveProperty("port", port);
+        expect(instance).toHaveProperty("lastSeen");
+        
+        // Token should NOT be in instance
+        expect(instance).not.toHaveProperty("token");
+
+        await shutdownServer();
+      });
+
+      it("RED: GET /instances rejects invalid token with 401", async () => {
+        await startServer();
+
+        const response = await fetch(`${serverUrl}/instances?token=invalid`);
+        expect(response.status).toBe(401);
+        
+        const data = await response.json();
+        expect(data).toHaveProperty("error");
+
+        await shutdownServer();
+      });
+
+      it("RED: GET /instances excludes stale entries older than STALE_MS", async () => {
+        // Create stale registry file manually
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const crypto = await import("node:crypto");
+        
+        const registryDir = path.join(tmpDir, "instances");
+        await fs.mkdir(registryDir, { recursive: true });
+
+        const staleId = crypto.randomUUID();
+        const staleRegistry = {
+          id: staleId,
+          label: "Stale Instance",
+          cwd: "/stale/project",
+          port: 9999,
+          lastSeen: Date.now() - 200, // 200ms ago (> 100ms STALE_MS)
+        };
+
+        await fs.writeFile(
+          path.join(registryDir, `${staleId}.json`),
+          JSON.stringify(staleRegistry)
+        );
+
+        // Start fresh server
+        await startServer();
+
+        const response = await fetch(`${serverUrl}/instances?token=${token}`);
+        expect(response.ok).toBe(true);
+        
+        const data = await response.json();
+        expect(data).toHaveProperty("instances");
+        expect(Array.isArray(data.instances)).toBe(true);
+        
+        // Should only contain current instance, not stale one
+        expect(data.instances.length).toBe(1);
+        expect(data.instances[0].id).not.toBe(staleId);
+        expect(data.instances[0].cwd).toBe("/home/user/project");
+
+        await shutdownServer();
+      });
+
+      it("RED: GET /instances includes multiple live instances", async () => {
+        // Start first instance
+        await startServer();
+        const token1 = token;
+        const serverUrl1 = serverUrl;
+
+        // Create second registry file manually (simulating another live instance)
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const crypto = await import("node:crypto");
+        
+        const registryDir = path.join(tmpDir, "instances");
+        const liveId = crypto.randomUUID();
+        const liveRegistry = {
+          id: liveId,
+          label: "Second Instance",
+          cwd: "/home/user/other-project",
+          port: 8888,
+          lastSeen: Date.now(), // Current timestamp
+        };
+
+        await fs.writeFile(
+          path.join(registryDir, `${liveId}.json`),
+          JSON.stringify(liveRegistry)
+        );
+
+        const response = await fetch(`${serverUrl1}/instances?token=${token1}`);
+        expect(response.ok).toBe(true);
+        
+        const data = await response.json();
+        expect(data).toHaveProperty("instances");
+        expect(Array.isArray(data.instances)).toBe(true);
+        expect(data.instances.length).toBe(2);
+
+        // Verify both instances are present
+        const cwds = data.instances.map((inst: any) => inst.cwd).sort();
+        expect(cwds).toEqual(["/home/user/other-project", "/home/user/project"]);
+
+        await shutdownServer();
+      });
+
+      it("RED: GET /instances without token parameter returns 401", async () => {
+        await startServer();
+
+        const response = await fetch(`${serverUrl}/instances`);
+        expect(response.status).toBe(401);
+
+        await shutdownServer();
+      });
+    });
+  });
+
+  describe("RED: Phase 1 Landing Page Instance Picker UI", () => {
+    /**
+     * Tests for Phase 1 landing page with instance picker UI.
+     * 
+     * Expected behavior:
+     * 1. GET / HTML includes instance picker/list area (id="instances" or text "Pi instances")
+     * 2. HTML JavaScript fetches /instances?token=
+     * 3. HTML renders live instances and allows switching target
+     * 4. Contains JS function names like loadInstances, renderInstances
+     * 
+     * Tests are semantic - no exact styling required, only semantic markers.
+     */
+
+    let serverUrl: string;
+    let token: string;
+    let port: number;
+
+    const startServer = async () => {
+      process.env.PI_MOBILE_BRIDGE_PORT = "0";
+      
+      registeredCommands.clear();
+      registeredHooks.clear();
+      const freshModule = await import("../extensions/mobile-bridge/index.ts?t=" + Date.now());
+      freshModule.default(mockPi);
+
+      const sessionStartHandlers = registeredHooks.get("session_start");
+      const mockNotify = vi.fn();
+      const mockCtx: ExtensionCommandContext = {
+        ui: { notify: mockNotify },
+        cwd: "/home/user/project",
+        model: "test-model",
+      } as any;
+
+      await sessionStartHandlers![0]({}, mockCtx);
+
+      // Get URL and token from status
+      const mobileCommand = registeredCommands.get("mobile");
+      await mobileCommand!.handler("status", mockCtx);
+
+      const statusCall = mockNotify.mock.calls.find((call) =>
+        call[0].includes("http://")
+      );
+      expect(statusCall).toBeDefined();
+      
+      const urlMatch = statusCall[0].match(/http:\/\/[^\s]+:(\d+)\/\?token=([a-f0-9]+)/);
+      expect(urlMatch).not.toBeNull();
+      
+      port = parseInt(urlMatch[1], 10);
+      token = urlMatch[2];
+      serverUrl = `http://127.0.0.1:${port}`;
+    };
+
+    const shutdownServer = async () => {
+      const sessionShutdownHandlers = registeredHooks.get("session_shutdown");
+      if (sessionShutdownHandlers) {
+        const mockCtx: ExtensionCommandContext = {
+          ui: { notify: vi.fn() },
+          cwd: "/test",
+          model: "test-model",
+        } as any;
+        await sessionShutdownHandlers[0]({}, mockCtx);
+      }
+    };
+
+    it("RED: GET / returns HTML with instance picker area", async () => {
+      await startServer();
+
+      const response = await fetch(`${serverUrl}/?token=${token}`);
+      expect(response.ok).toBe(true);
+      expect(response.headers.get("content-type")).toMatch(/text\/html/);
+      
+      const html = await response.text();
+      
+      // Must contain instance picker semantic markers
+      // Either id="instances" or text "Pi instances"
+      const hasInstancesId = html.includes('id="instances"');
+      const hasPiInstancesText = html.toLowerCase().includes('pi instances');
+      
+      expect(hasInstancesId || hasPiInstancesText).toBe(true);
+
+      await shutdownServer();
+    });
+
+    it("RED: GET / HTML includes JavaScript that fetches /instances endpoint", async () => {
+      await startServer();
+
+      const response = await fetch(`${serverUrl}/?token=${token}`);
+      expect(response.ok).toBe(true);
+      
+      const html = await response.text();
+      
+      // Must contain fetch call to /instances?token=
+      expect(html).toMatch(/\/instances\?token=/i);
+
+      await shutdownServer();
+    });
+
+    it("RED: GET / HTML contains loadInstances function", async () => {
+      await startServer();
+
+      const response = await fetch(`${serverUrl}/?token=${token}`);
+      expect(response.ok).toBe(true);
+      
+      const html = await response.text();
+      
+      // Must contain loadInstances function declaration or reference
+      expect(html).toMatch(/loadInstances/);
+
+      await shutdownServer();
+    });
+
+    it("RED: GET / HTML contains renderInstances function", async () => {
+      await startServer();
+
+      const response = await fetch(`${serverUrl}/?token=${token}`);
+      expect(response.ok).toBe(true);
+      
+      const html = await response.text();
+      
+      // Must contain renderInstances function declaration or reference
+      expect(html).toMatch(/renderInstances/);
+
+      await shutdownServer();
+    });
+
+    it("RED: GET / HTML structure allows displaying multiple instances", async () => {
+      await startServer();
+
+      const response = await fetch(`${serverUrl}/?token=${token}`);
+      expect(response.ok).toBe(true);
+      
+      const html = await response.text();
+      
+      // Verify all required components are present:
+      // 1. Instance picker container
+      const hasInstancesId = html.includes('id="instances"');
+      const hasPiInstancesText = html.toLowerCase().includes('pi instances');
+      expect(hasInstancesId || hasPiInstancesText).toBe(true);
+      
+      // 2. Fetch call to /instances endpoint
+      expect(html).toMatch(/\/instances\?token=/);
+      
+      // 3. loadInstances function
+      expect(html).toMatch(/loadInstances/);
+      
+      // 4. renderInstances function
+      expect(html).toMatch(/renderInstances/);
+
+      await shutdownServer();
+    });
+
+    it("RED: GET / without token parameter returns 401", async () => {
+      await startServer();
+
+      const response = await fetch(`${serverUrl}/`);
+      expect(response.status).toBe(401);
+
+      await shutdownServer();
+    });
+
+    it("RED: GET / with invalid token returns 401", async () => {
+      await startServer();
+
+      const response = await fetch(`${serverUrl}/?token=invalid`);
+      expect(response.status).toBe(401);
+
+      await shutdownServer();
+    });
+
+    it("RED: GET / HTML includes mechanism to switch between instances", async () => {
+      await startServer();
+
+      const response = await fetch(`${serverUrl}/?token=${token}`);
+      expect(response.ok).toBe(true);
+      
+      const html = await response.text();
+      
+      // Must have ability to switch target:
+      // - Either form action update mechanism
+      // - Or navigation to selected instance URL
+      // - Look for common patterns: onclick, href, action, navigate, select
+      const hasSwitchingMechanism = (
+        html.includes('onclick') ||
+        html.includes('href') ||
+        html.includes('action') ||
+        html.includes('navigate') ||
+        html.includes('select')
+      );
+      
+      expect(hasSwitchingMechanism).toBe(true);
+
+      await shutdownServer();
+    });
+  });
 });

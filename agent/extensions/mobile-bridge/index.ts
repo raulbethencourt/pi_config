@@ -1,7 +1,9 @@
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { networkInterfaces } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import type {
     AgentEndEvent,
     ExtensionAPI,
@@ -14,6 +16,11 @@ const DEFAULT_PORT = 4321;
 const MAX_ANSWERS = 10;
 const SERVER_HOST = "0.0.0.0";
 const STATUS_HOST = "127.0.0.1";
+const DEFAULT_HEARTBEAT_MS = 5_000;
+const DEFAULT_STALE_MS = 30_000;
+const INSTANCES_DIR_NAME = "instances";
+const MAX_PREFERRED_PORT = 5_000;
+const MAX_PORT = 65_535;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 10;
 const KDECONNECT_PREFIX = "Pi finished: ";
@@ -42,6 +49,15 @@ type KdeConnectDetection = {
     deviceId?: string;
     envDeviceId?: string;
     attempts: KdeConnectDetectionAttempt[];
+};
+
+type MobileBridgeRegistryEntry = {
+    id: string;
+    label: string;
+    cwd: string;
+    port: number;
+    lastSeen: number;
+    url?: string;
 };
 
 let cachedKdeConnectDetection: KdeConnectDetection | undefined;
@@ -88,6 +104,174 @@ function parsePort(value: string | undefined): number {
 
     const port = Number.parseInt(value, 10);
     return Number.isInteger(port) && port >= 0 ? port : DEFAULT_PORT;
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+    if (!value) {
+        return fallback;
+    }
+
+    const parsed = Number.parseInt(value, 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getRegistryBaseDir(): string {
+    return process.env.PI_MOBILE_BRIDGE_REGISTRY_DIR || path.join(tmpdir(), "pi-mobile-bridge");
+}
+
+function getInstancesDir(): string {
+    return path.join(getRegistryBaseDir(), INSTANCES_DIR_NAME);
+}
+
+function getHeartbeatMs(): number {
+    return parsePositiveInteger(process.env.PI_MOBILE_BRIDGE_HEARTBEAT_MS, DEFAULT_HEARTBEAT_MS);
+}
+
+function getStaleMs(): number {
+    return parsePositiveInteger(process.env.PI_MOBILE_BRIDGE_STALE_MS, DEFAULT_STALE_MS);
+}
+
+function toRegistryEntry(value: unknown): MobileBridgeRegistryEntry | undefined {
+    if (!value || typeof value !== "object") {
+        return undefined;
+    }
+
+    const record = value as Record<string, unknown>;
+    const { id, label, cwd, port, lastSeen } = record;
+
+    if (
+        typeof id !== "string"
+        || typeof label !== "string"
+        || typeof cwd !== "string"
+        || typeof port !== "number"
+        || !Number.isFinite(port)
+        || typeof lastSeen !== "number"
+        || !Number.isFinite(lastSeen)
+        || (typeof record.url !== "undefined" && typeof record.url !== "string")
+    ) {
+        return undefined;
+    }
+
+    return {
+        id,
+        label,
+        cwd,
+        port,
+        lastSeen,
+        url: typeof record.url === "string" ? record.url : undefined,
+    };
+}
+
+async function writeRegistryEntry(filePath: string, entry: MobileBridgeRegistryEntry): Promise<void> {
+    const directory = path.dirname(filePath);
+    const tempPath = path.join(directory, `${path.basename(filePath)}.${randomUUID()}.tmp`);
+
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(tempPath, JSON.stringify(entry), "utf8");
+    await fs.rename(tempPath, filePath);
+}
+
+async function removeRegistryEntry(filePath: string): Promise<void> {
+    try {
+        await fs.unlink(filePath);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw error;
+        }
+    }
+}
+
+async function readRegistryEntries(now = Date.now()): Promise<MobileBridgeRegistryEntry[]> {
+    const instancesDir = getInstancesDir();
+    const staleCutoff = now - getStaleMs();
+    let fileNames: string[] = [];
+
+    try {
+        fileNames = await fs.readdir(instancesDir);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return [];
+        }
+
+        throw error;
+    }
+
+    const entries = await Promise.all(
+        fileNames
+            .filter((fileName) => fileName.endsWith(".json"))
+            .map(async (fileName) => {
+                try {
+                    const content = await fs.readFile(path.join(instancesDir, fileName), "utf8");
+                    const entry = toRegistryEntry(JSON.parse(content));
+
+                    if (!entry || entry.lastSeen < staleCutoff) {
+                        return undefined;
+                    }
+
+                    return entry;
+                } catch {
+                    return undefined;
+                }
+            }),
+    );
+
+    return entries.filter((entry): entry is MobileBridgeRegistryEntry => Boolean(entry));
+}
+
+async function canBindPort(port: number): Promise<boolean> {
+    return await new Promise((resolve) => {
+        const probe = createServer();
+        let settled = false;
+
+        const finish = (result: boolean) => {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            resolve(result);
+        };
+
+        probe.once("error", () => {
+            finish(false);
+        });
+
+        probe.listen(port, SERVER_HOST, () => {
+            probe.close(() => {
+                finish(true);
+            });
+        });
+    });
+}
+
+export async function findAvailablePort(startPort: number): Promise<number> {
+    if (startPort === 0) {
+        return 0;
+    }
+
+    if (!Number.isInteger(startPort) || startPort < 0 || startPort > MAX_PORT) {
+        throw new Error(`Invalid mobile bridge port: ${startPort}`);
+    }
+
+    if (await canBindPort(startPort)) {
+        return startPort;
+    }
+
+    if (startPort < MAX_PREFERRED_PORT) {
+        for (let port = startPort + 1; port < MAX_PREFERRED_PORT; port++) {
+            if (await canBindPort(port)) {
+                return port;
+            }
+        }
+    }
+
+    for (let port = Math.max(startPort + 1, MAX_PREFERRED_PORT); port <= MAX_PORT; port++) {
+        if (await canBindPort(port)) {
+            return port;
+        }
+    }
+
+    throw new Error(`Unable to find an available mobile bridge port from ${startPort}`);
 }
 
 export function resolveStatusHost(
@@ -394,32 +578,139 @@ function createIndexHtml() {
   <title>Pi Mobile Bridge</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #111827; color: #f9fafb; }
-    main { max-width: 32rem; margin: 0 auto; }
+    main { max-width: 44rem; margin: 0 auto; display: grid; gap: 1rem; }
+    section { background: #0f172a; border: 1px solid #1f2937; border-radius: 1rem; padding: 1rem; }
     textarea, input, button { width: 100%; box-sizing: border-box; margin-top: 0.75rem; }
-    textarea, input { padding: 0.75rem; border-radius: 0.75rem; border: 1px solid #374151; background: #1f2937; color: inherit; }
-    button { padding: 0.9rem; border: 0; border-radius: 0.75rem; background: #2563eb; color: white; font-weight: 600; }
-    pre { white-space: pre-wrap; background: #1f2937; padding: 0.75rem; border-radius: 0.75rem; }
+    textarea, input, button, .instance-link { padding: 0.75rem; border-radius: 0.75rem; }
+    textarea, input { border: 1px solid #374151; background: #1f2937; color: inherit; }
+    button, .instance-link { border: 0; background: #2563eb; color: white; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+    pre, ul { white-space: pre-wrap; background: #1f2937; padding: 0.75rem; border-radius: 0.75rem; }
+    ul { margin: 0; padding-left: 1.25rem; }
+    li + li { margin-top: 0.5rem; }
     .muted { color: #9ca3af; }
+    .instance-grid { display: grid; gap: 0.75rem; margin-top: 0.75rem; }
+    .instance-card { display: grid; gap: 0.35rem; padding: 0.75rem; border-radius: 0.75rem; background: #1f2937; }
+    .instance-meta { color: #9ca3af; font-size: 0.9rem; }
   </style>
 </head>
 <body>
   <main>
-    <h1>Pi Mobile Bridge</h1>
-    <p class="muted">Use the token from <code>/mobile status</code> to send prompts and inspect recent answers.</p>
-    <input id="token" placeholder="token" />
-    <textarea id="message" rows="5" placeholder="Send a message to Pi"></textarea>
-    <button id="send">Send</button>
-    <pre id="result">Ready.</pre>
+    <section>
+      <h1>Pi Mobile Bridge</h1>
+      <p class="muted">Use the token from <code>/mobile status</code> to send prompts and inspect recent answers.</p>
+      <input id="token" placeholder="token" />
+      <textarea id="message" rows="5" placeholder="Send a message to Pi"></textarea>
+      <button id="send" type="button">Send</button>
+      <pre id="result">Ready.</pre>
+    </section>
+
+    <section aria-labelledby="instances-heading">
+      <h2 id="instances-heading">Pi instances</h2>
+      <p class="muted">Switch to another running Pi instance. Tokens are reused as a temporary MVP placeholder.</p>
+      <div id="instances" class="instance-grid">Loading instances…</div>
+    </section>
+
+    <section aria-labelledby="answers-heading">
+      <h2 id="answers-heading">Recent answers</h2>
+      <ul id="answers"><li class="muted">No answers yet.</li></ul>
+    </section>
   </main>
   <script>
     const params = new URLSearchParams(location.search);
     const tokenInput = document.getElementById('token');
     const messageInput = document.getElementById('message');
     const result = document.getElementById('result');
-    tokenInput.value = params.get('token') || '';
+    const instancesContainer = document.getElementById('instances');
+    const answersList = document.getElementById('answers');
+
+    function getToken() {
+      return (params.get('token') || tokenInput.value || '').trim();
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function getInstanceUrl(instance, token) {
+      if (instance && typeof instance.url === 'string' && instance.url) {
+        return instance.url;
+      }
+
+      const hostname = location.hostname || '127.0.0.1';
+      return 'http://' + hostname + ':' + instance.port + '/?token=' + encodeURIComponent(token);
+    }
+
+    function renderInstances(instances) {
+      if (!Array.isArray(instances) || instances.length === 0) {
+        instancesContainer.innerHTML = '<p class="muted">No live Pi instances found.</p>';
+        return;
+      }
+
+      const token = getToken();
+      instancesContainer.innerHTML = instances.map((instance) => {
+        const label = escapeHtml(instance.label || ('Pi on ' + instance.port));
+        const cwd = escapeHtml(instance.cwd || '');
+        const targetUrl = escapeHtml(getInstanceUrl(instance, token));
+        return '<article class="instance-card">'
+          + '<strong>' + label + '</strong>'
+          + '<span class="instance-meta">' + cwd + ' · port ' + escapeHtml(instance.port) + '</span>'
+          + '<a class="instance-link" href="' + targetUrl + '" onclick="window.location.href=this.href; return false;">Open instance</a>'
+          + '</article>';
+      }).join('');
+    }
+
+    async function loadInstances() {
+      const token = getToken();
+      if (!token) {
+        instancesContainer.innerHTML = '<p class="muted">Missing token.</p>';
+        return;
+      }
+
+      const response = await fetch('/instances?token=' + encodeURIComponent(token));
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        instancesContainer.innerHTML = '<p class="muted">Unable to load instances.</p>';
+        return;
+      }
+
+      renderInstances(data.instances || []);
+    }
+
+    function renderAnswers(answers) {
+      if (!Array.isArray(answers) || answers.length === 0) {
+        answersList.innerHTML = '<li class="muted">No answers yet.</li>';
+        return;
+      }
+
+      answersList.innerHTML = answers
+        .slice()
+        .reverse()
+        .map((answer) => '<li>' + escapeHtml(answer) + '</li>')
+        .join('');
+    }
+
+    async function loadAnswers() {
+      const token = getToken();
+      if (!token) {
+        renderAnswers([]);
+        return;
+      }
+
+      const response = await fetch('/answers?token=' + encodeURIComponent(token));
+      const data = await response.json().catch(() => ({}));
+      renderAnswers(response.ok ? (data.answers || []) : []);
+    }
+
+    tokenInput.value = getToken();
 
     document.getElementById('send').addEventListener('click', async () => {
-      const token = tokenInput.value.trim();
+      const token = getToken();
       const message = messageInput.value.trim();
       const response = await fetch('/send', {
         method: 'POST',
@@ -428,7 +719,14 @@ function createIndexHtml() {
       });
       const data = await response.json().catch(() => ({}));
       result.textContent = JSON.stringify(data, null, 2);
+
+      if (response.ok) {
+        await loadAnswers();
+      }
     });
+
+    void loadInstances();
+    void loadAnswers();
   </script>
 </body>
 </html>`;
@@ -472,7 +770,11 @@ export default function (pi: ExtensionAPI) {
     let answers: string[] = [];
     let server: Server | undefined;
     let serverPort: number | undefined;
+    let instanceCwd = process.cwd();
+    let instanceLabel = path.basename(instanceCwd) || instanceCwd;
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
     const token = randomBytes(32).toString("hex");
+    const instanceId = randomUUID();
     const requestsByClient = new Map<string, number[]>();
 
     const getServerUrl = () => (
@@ -480,6 +782,40 @@ export default function (pi: ExtensionAPI) {
             ? `http://${resolveStatusHost(process.env.PI_MOBILE_BRIDGE_HOST, networkInterfaces())}:${serverPort}/?token=${token}`
             : undefined
     );
+
+    const getRegistryFilePath = () => path.join(getInstancesDir(), `${instanceId}.json`);
+
+    const writeOwnRegistry = async () => {
+        if (!serverPort) {
+            return;
+        }
+
+        await writeRegistryEntry(getRegistryFilePath(), {
+            id: instanceId,
+            label: instanceLabel,
+            cwd: instanceCwd,
+            port: serverPort,
+            lastSeen: Date.now(),
+            url: getServerUrl(),
+        });
+    };
+
+    const stopHeartbeat = () => {
+        if (!heartbeatTimer) {
+            return;
+        }
+
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = undefined;
+    };
+
+    const startHeartbeat = () => {
+        stopHeartbeat();
+        heartbeatTimer = setInterval(() => {
+            void writeOwnRegistry().catch(() => undefined);
+        }, getHeartbeatMs());
+        heartbeatTimer.unref?.();
+    };
 
     const shareBridgeLink = async (url: string) => {
         try {
@@ -544,6 +880,16 @@ export default function (pi: ExtensionAPI) {
                     return;
                 }
 
+                if (request.method === "GET" && url.pathname === "/instances") {
+                    if (url.searchParams.get("token") !== token) {
+                        json(response, 401, { error: "unauthorized" });
+                        return;
+                    }
+
+                    json(response, 200, { instances: await readRegistryEntries() });
+                    return;
+                }
+
                 if (request.method === "POST" && url.pathname === "/send") {
                     const rawBody = await readBody(request);
                     const body = rawBody ? JSON.parse(rawBody) as { token?: unknown; message?: unknown } : {};
@@ -576,6 +922,11 @@ export default function (pi: ExtensionAPI) {
                 }
 
                 if (request.method === "GET" && url.pathname === "/") {
+                    if (url.searchParams.get("token") !== token) {
+                        json(response, 401, { error: "unauthorized" });
+                        return;
+                    }
+
                     html(response, 200, createIndexHtml());
                     return;
                 }
@@ -591,10 +942,11 @@ export default function (pi: ExtensionAPI) {
         });
 
         const requestedPort = parsePort(process.env.PI_MOBILE_BRIDGE_PORT);
+        const listenPort = requestedPort === 0 ? 0 : await findAvailablePort(requestedPort);
 
         await new Promise<void>((resolve, reject) => {
             server!.once("error", reject);
-            server!.listen(requestedPort, SERVER_HOST, () => {
+            server!.listen(listenPort, SERVER_HOST, () => {
                 const address = server!.address();
                 server!.off("error", reject);
 
@@ -659,13 +1011,24 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
-    pi.on("session_start", async (_event, _ctx) => {
+    pi.on("session_start", async (_event, ctx) => {
+        instanceCwd = typeof ctx?.cwd === "string" && ctx.cwd ? ctx.cwd : process.cwd();
+        instanceLabel = path.basename(instanceCwd) || instanceCwd;
+
         await startServer();
+        await writeOwnRegistry();
+        startHeartbeat();
         await getKdeConnectDeviceId();
     });
 
     pi.on("session_shutdown", async () => {
-        await closeServer();
+        stopHeartbeat();
+
+        try {
+            await closeServer();
+        } finally {
+            await removeRegistryEntry(getRegistryFilePath());
+        }
     });
 
     pi.on("agent_start", async () => {
