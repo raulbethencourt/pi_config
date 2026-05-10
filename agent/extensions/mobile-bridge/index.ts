@@ -245,6 +245,45 @@ async function removeRegistryEntry(filePath: string): Promise<void> {
     }
 }
 
+async function cleanupStaleRegistryEntries(now = Date.now()): Promise<void> {
+    const instancesDir = getInstancesDir();
+    const staleMs = getStaleMs();
+    let fileNames: string[] = [];
+
+    try {
+        fileNames = await fs.readdir(instancesDir);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return;
+        }
+
+        throw error;
+    }
+
+    await Promise.all(
+        fileNames
+            .filter((fileName) => fileName.endsWith(".json"))
+            .map(async (fileName) => {
+                const filePath = path.join(instancesDir, fileName);
+
+                try {
+                    const content = await fs.readFile(filePath, "utf8");
+                    const record = JSON.parse(content) as { lastSeen?: unknown };
+
+                    if (typeof record.lastSeen !== "number" || !Number.isFinite(record.lastSeen)) {
+                        return;
+                    }
+
+                    if (now - record.lastSeen > staleMs) {
+                        await removeRegistryEntry(filePath);
+                    }
+                } catch {
+                    return;
+                }
+            }),
+    );
+}
+
 async function readRegistryEntries(now = Date.now()): Promise<MobileBridgeRegistryEntry[]> {
     const instancesDir = getInstancesDir();
     const staleCutoff = now - getStaleMs();
@@ -1238,6 +1277,7 @@ export default function (pi: ExtensionAPI) {
         instanceLabel = path.basename(instanceCwd) || instanceCwd;
 
         await startServer();
+        await cleanupStaleRegistryEntries();
         await writeOwnRegistry();
         startHeartbeat();
         await getKdeConnectDeviceId();

@@ -2390,6 +2390,93 @@ describe("Mobile Bridge Extension", () => {
       });
     });
 
+    describe("Stale Registry Cleanup", () => {
+      it("RED: cleans up stale registry files on session_start before writing own file", async () => {
+        // Setup: Create registry dir with stale and fresh files
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const crypto = await import("node:crypto");
+        
+        const registryDir = path.join(tmpDir, "instances");
+        await fs.mkdir(registryDir, { recursive: true });
+
+        const now = Date.now();
+
+        // Create 3 stale registry files (lastSeen older than stale threshold)
+        const staleIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+        for (const id of staleIds) {
+          const staleRegistry = {
+            id,
+            label: `Stale Instance ${id}`,
+            cwd: `/stale/project/${id}`,
+            port: 9999,
+            lastSeen: now - 500, // 500ms ago (> 100ms STALE_MS threshold)
+          };
+          await fs.writeFile(
+            path.join(registryDir, `${id}.json`),
+            JSON.stringify(staleRegistry)
+          );
+        }
+
+        // Create 1 fresh registry file (lastSeen current)
+        const freshId = crypto.randomUUID();
+        const freshRegistry = {
+          id: freshId,
+          label: "Fresh Instance",
+          cwd: "/fresh/project",
+          port: 8888,
+          lastSeen: now, // Current timestamp
+        };
+        await fs.writeFile(
+          path.join(registryDir, `${freshId}.json`),
+          JSON.stringify(freshRegistry)
+        );
+
+        // Verify initial state: 4 files total
+        const filesBeforeStart = await fs.readdir(registryDir);
+        expect(filesBeforeStart.length).toBe(4);
+
+        // Trigger session_start (should cleanup stale files and create own registry)
+        registeredCommands.clear();
+        registeredHooks.clear();
+        const freshModule = await import("../extensions/mobile-bridge/index.ts?t=" + Date.now());
+        freshModule.default(mockPi);
+
+        const sessionStartHandlers = registeredHooks.get("session_start");
+        const mockNotify = vi.fn();
+        const mockCtx: ExtensionCommandContext = {
+          ui: { notify: mockNotify },
+          cwd: "/home/user/project",
+          model: "test-model",
+        } as any;
+
+        await sessionStartHandlers![0]({}, mockCtx);
+
+        // Verify final state: only fresh file + own new file remain (total 2)
+        const filesAfterStart = await fs.readdir(registryDir);
+        expect(filesAfterStart.length).toBe(2);
+
+        // Verify stale files were deleted
+        for (const staleId of staleIds) {
+          const staleExists = filesAfterStart.includes(`${staleId}.json`);
+          expect(staleExists).toBe(false);
+        }
+
+        // Verify fresh file still exists
+        const freshExists = filesAfterStart.includes(`${freshId}.json`);
+        expect(freshExists).toBe(true);
+
+        // Verify own new file was created
+        const ownFile = filesAfterStart.find((file) => file !== `${freshId}.json`);
+        expect(ownFile).toBeDefined();
+        expect(ownFile).toMatch(/^[a-f0-9-]+\.json$/);
+
+        // Cleanup
+        const sessionShutdownHandlers = registeredHooks.get("session_shutdown");
+        await sessionShutdownHandlers![0]({}, mockCtx);
+      });
+    });
+
     describe("Registry File Management", () => {
       it("RED: creates registry file on session_start with id, label, cwd, port, lastSeen", async () => {
         // Reinitialize extension
