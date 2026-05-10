@@ -2,7 +2,13 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+    createServer as createHttpServer,
+    type IncomingMessage,
+    type Server as HttpServer,
+    type ServerResponse,
+} from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { networkInterfaces, tmpdir } from "node:os";
 import type {
     AgentEndEvent,
@@ -27,6 +33,33 @@ const KDECONNECT_PREFIX = "Pi finished: ";
 const MAX_NOTIFICATION_PREVIEW = 80;
 const KDECONNECT_TIMEOUT_MS = 5_000;
 const MAX_DEBUG_VALUE_LENGTH = 72;
+const MAX_MESSAGE_LENGTH = 10_000;
+const MAX_LOG_ENTRIES = 100;
+const RECENT_LOG_COUNT = 10;
+
+const SELF_SIGNED_KEY = `-----BEGIN PRIVATE KEY-----
+***REMOVED-LEAKED-PRIVATE-KEY***
+-----END PRIVATE KEY-----`;
+
+const SELF_SIGNED_CERT = `-----BEGIN CERTIFICATE-----
+MIIDCTCCAfGgAwIBAgIUVcpu27D2QRV1ktcYAe0pqd/uqocwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDUxMDE3NTgwMFoXDTI3MDUx
+MDE3NTgwMFowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF
+AAOCAQ8AMIIBCgKCAQEA0V8F0iws/D9w5A3p5Z03zaeyfUc9n+T9V8jW5jLKkypJ
++ZHp9dw08EQhFkwDUYX/YPN1Ogw6nyIYJSTUcO7APddUGEELciXvl1oZrOz+f2Op
+bDk3hggYEY0fFTx2XlvPoCOmonZJHffK8VWOdW0dD8HRd37sptwD9+t/aumOnjvN
+chbrXiluZ1Q7eRYEsfWNGXAtkVxIB3QnHO9DzTN/JTQSTVmoehlNvDmZNcDxX3je
+a62IFtZhq1N+T1P8UXUhKUiYCJgSdvxS3+SEygNOlBt97hhlCWwq/BvWR7+PaCL3
+awINxf1q7tqjjircS6lEIxjG2MUosTvRmu9l4/BizwIDAQABo1MwUTAdBgNVHQ4E
+FgQUcTaQRS6h25zeZTl/TgY8XGTPsXAwHwYDVR0jBBgwFoAUcTaQRS6h25zeZTl/
+TgY8XGTPsXAwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAM8oi
+RchlNGx0fICT2JV8DLFT7Scbr8LgxKLPwUwhVbhSe3Uo12M9yaFeAkzotOje0ErE
+M+3yP48yGXEPB7ZD5WRmGfMVhMikVUUUfKOCTVExoEwFuqDUaAhR/tDeqWiPugi3
+K0edpiNBrX/HdPHNCRa6MpCJcpn7cHe1Xlyp3wIVPT6RuLkFSWJK7Au5HZWkQW2p
+5LGgMWYR/6bc7Dr2ApcPMQuPk03jseZwunywUvlDEEmdGqaVDkWO0PHBHsIl+uhG
+IqtUz/isVy3fusQpPpU5VHZkEn7FxUdBFFvS3mTEoSLYGbrWU8IShywM7Qg8pUqZ
+BaMqnbYoJqiPSA3s6Q==
+-----END CERTIFICATE-----`;
 
 const KDECONNECT_DETECTION_COMMANDS = [
     { command: "kdeconnect-cli", args: ["--list-devices", "--id-only"], parser: "idOnly" },
@@ -60,8 +93,27 @@ type MobileBridgeRegistryEntry = {
     url?: string;
 };
 
+type RateLimitResult = {
+    allowed: boolean;
+    retryAfter: number;
+};
+
+const logs: string[] = [];
 let cachedKdeConnectDetection: KdeConnectDetection | undefined;
 let hasCachedKdeConnectDetection = false;
+
+function addBridgeLog(message: string) {
+    const entry = `${new Date().toISOString()} ${message}`;
+    logs.push(entry);
+
+    if (logs.length > MAX_LOG_ENTRIES) {
+        logs.splice(0, logs.length - MAX_LOG_ENTRIES);
+    }
+}
+
+export function getBridgeLogs(): string[] {
+    return [...logs];
+}
 
 function extractAssistantText(event: AgentEndEvent): string | undefined {
     const messages = Array.isArray(event?.messages) ? event.messages : [];
@@ -113,6 +165,18 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
 
     const parsed = Number.parseInt(value, 10);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function isHttpsEnabled(): boolean {
+    return process.env.PI_MOBILE_BRIDGE_HTTPS === "1";
+}
+
+function getServerProtocol(): "http" | "https" {
+    return isHttpsEnabled() ? "https" : "http";
+}
+
+function getRateLimitMaxRequests(): number {
+    return parsePositiveInteger(process.env.PI_MOBILE_BRIDGE_RATE_LIMIT, RATE_LIMIT_MAX_REQUESTS);
 }
 
 function getRegistryBaseDir(): string {
@@ -220,7 +284,7 @@ async function readRegistryEntries(now = Date.now()): Promise<MobileBridgeRegist
 
 async function canBindPort(port: number): Promise<boolean> {
     return await new Promise((resolve) => {
-        const probe = createServer();
+        const probe = createHttpServer();
         let settled = false;
 
         const finish = (result: boolean) => {
@@ -357,6 +421,19 @@ function truncateDebugValue(value: string, maxLength = MAX_DEBUG_VALUE_LENGTH): 
     return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
+function isKdeUnavailable(detection: KdeConnectDetection): boolean {
+    if (detection.deviceId || detection.envDeviceId || detection.attempts.length === 0) {
+        return false;
+    }
+
+    const hasSuccessfulCommand = detection.attempts.some((attempt) => attempt.status === 0 && !attempt.error);
+    const hasFailure = detection.attempts.some(
+        (attempt) => Boolean(attempt.error) || (typeof attempt.status === "number" && attempt.status !== 0),
+    );
+
+    return hasFailure && !hasSuccessfulCommand;
+}
+
 async function detectKdeConnectDevice(options?: { refresh?: boolean }): Promise<KdeConnectDetection> {
     const envDeviceId = process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID?.trim();
     if (envDeviceId) {
@@ -386,50 +463,47 @@ async function detectKdeConnectDevice(options?: { refresh?: boolean }): Promise<
                 stderr: "",
                 error: "spawnSync unavailable",
             });
-            cachedKdeConnectDetection = { attempts };
-            hasCachedKdeConnectDetection = true;
-            return cachedKdeConnectDetection;
-        }
+        } else {
+            for (const attempt of KDECONNECT_DETECTION_COMMANDS) {
+                try {
+                    const result = runSpawnSync(attempt.command, [...attempt.args], {
+                        encoding: "utf8",
+                        timeout: KDECONNECT_TIMEOUT_MS,
+                    });
+                    const stdout = normalizeSpawnOutput(result.stdout);
+                    const stderr = normalizeSpawnOutput(result.stderr);
+                    const parsedId = attempt.parser === "idOnly"
+                        ? parseKdeConnectIdOnly(stdout)
+                        : parseKdeConnectList(stdout);
 
-        for (const attempt of KDECONNECT_DETECTION_COMMANDS) {
-            try {
-                const result = runSpawnSync(attempt.command, [...attempt.args], {
-                    encoding: "utf8",
-                    timeout: KDECONNECT_TIMEOUT_MS,
-                });
-                const stdout = normalizeSpawnOutput(result.stdout);
-                const stderr = normalizeSpawnOutput(result.stderr);
-                const parsedId = attempt.parser === "idOnly"
-                    ? parseKdeConnectIdOnly(stdout)
-                    : parseKdeConnectList(stdout);
+                    attempts.push({
+                        command: attempt.command,
+                        args: [...attempt.args],
+                        status: typeof result.status === "number" ? result.status : null,
+                        stdout,
+                        stderr,
+                        error: result.error?.message,
+                        parsedId,
+                    });
 
-                attempts.push({
-                    command: attempt.command,
-                    args: [...attempt.args],
-                    status: typeof result.status === "number" ? result.status : null,
-                    stdout,
-                    stderr,
-                    error: result.error?.message,
-                    parsedId,
-                });
-
-                if (!result.error && result.status === 0 && parsedId) {
-                    cachedKdeConnectDetection = {
-                        deviceId: parsedId,
-                        attempts,
-                    };
-                    hasCachedKdeConnectDetection = true;
-                    return cachedKdeConnectDetection;
+                    if (!result.error && result.status === 0 && parsedId) {
+                        cachedKdeConnectDetection = {
+                            deviceId: parsedId,
+                            attempts,
+                        };
+                        hasCachedKdeConnectDetection = true;
+                        return cachedKdeConnectDetection;
+                    }
+                } catch (error) {
+                    attempts.push({
+                        command: attempt.command,
+                        args: [...attempt.args],
+                        status: null,
+                        stdout: "",
+                        stderr: "",
+                        error: error instanceof Error ? error.message : String(error),
+                    });
                 }
-            } catch (error) {
-                attempts.push({
-                    command: attempt.command,
-                    args: [...attempt.args],
-                    status: null,
-                    stdout: "",
-                    stderr: "",
-                    error: error instanceof Error ? error.message : String(error),
-                });
             }
         }
     } catch (error) {
@@ -445,6 +519,11 @@ async function detectKdeConnectDevice(options?: { refresh?: boolean }): Promise<
 
     cachedKdeConnectDetection = { attempts };
     hasCachedKdeConnectDetection = true;
+
+    if (isKdeUnavailable(cachedKdeConnectDetection)) {
+        addBridgeLog(`kde detect unavailable: ${formatKdeConnectDebug(cachedKdeConnectDetection)}`);
+    }
+
     return cachedKdeConnectDetection;
 }
 
@@ -453,8 +532,12 @@ async function getKdeConnectDeviceId(): Promise<string | undefined> {
     return detection.deviceId;
 }
 
-function formatKdeDeviceInfo(deviceId: string | undefined): string {
-    return deviceId ? `kde: ${deviceId}` : "kde: no KDE device";
+function formatKdeDeviceInfo(detection: KdeConnectDetection): string {
+    if (detection.deviceId) {
+        return `kde: ${detection.deviceId}`;
+    }
+
+    return isKdeUnavailable(detection) ? "kde: unavailable" : "kde: no KDE device";
 }
 
 function formatKdeConnectDebug(detection: KdeConnectDetection): string {
@@ -520,34 +603,79 @@ async function notifyKdeConnect(text: string) {
         const childProcess = await import("node:child_process");
         const { args } = await createKdeConnectPingArgs(preview);
         const child = (childProcess.spawn || spawn)("kdeconnect-cli", args, { stdio: "ignore" });
-        child.on("error", () => undefined);
+        child.on("error", (error) => {
+            addBridgeLog(`kde notification error: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        child.on("exit", (code) => {
+            if (typeof code === "number" && code !== 0) {
+                addBridgeLog(`kde notification exit: ${code}`);
+            }
+        });
         child.unref?.();
-    } catch {
-        // Ignore notification failures.
+    } catch (error) {
+        addBridgeLog(`kde notification setup failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+}
+
+function extractBearerToken(request: IncomingMessage): string | undefined {
+    const header = request.headers.authorization;
+    if (typeof header !== "string") {
+        return undefined;
+    }
+
+    const match = header.trim().match(/^Bearer\s+(.+)$/i);
+    return match?.[1]?.trim() || undefined;
+}
+
+function extractToken(
+    request: IncomingMessage,
+    url: URL,
+    bodyToken?: unknown,
+): string | undefined {
+    const queryToken = url.searchParams.get("token")?.trim();
+    if (queryToken) {
+        return queryToken;
+    }
+
+    if (typeof bodyToken === "string" && bodyToken.trim()) {
+        return bodyToken.trim();
+    }
+
+    return extractBearerToken(request);
 }
 
 function consumeRateLimit(
     requestsByClient: Map<string, number[]>,
-    clientIp: string,
+    clientKey: string,
+    maxRequests: number,
     now = Date.now(),
-): boolean {
-    const recentRequests = (requestsByClient.get(clientIp) || []).filter(
+): RateLimitResult {
+    const recentRequests = (requestsByClient.get(clientKey) || []).filter(
         (timestamp) => now - timestamp < RATE_LIMIT_WINDOW_MS,
     );
 
-    if (recentRequests.length >= RATE_LIMIT_MAX_REQUESTS) {
-        requestsByClient.set(clientIp, recentRequests);
-        return false;
+    if (recentRequests.length >= maxRequests) {
+        requestsByClient.set(clientKey, recentRequests);
+        const oldestTimestamp = recentRequests[0] ?? now;
+        const retryAfter = Math.max(1, Math.ceil((oldestTimestamp + RATE_LIMIT_WINDOW_MS - now) / 1_000));
+        return { allowed: false, retryAfter };
     }
 
     recentRequests.push(now);
-    requestsByClient.set(clientIp, recentRequests);
-    return true;
+    requestsByClient.set(clientKey, recentRequests);
+    return { allowed: true, retryAfter: 0 };
 }
 
-function json(response: ServerResponse, statusCode: number, body: unknown) {
-    response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+function json(
+    response: ServerResponse,
+    statusCode: number,
+    body: unknown,
+    headers: Record<string, string> = {},
+) {
+    response.writeHead(statusCode, {
+        "Content-Type": "application/json; charset=utf-8",
+        ...headers,
+    });
     response.end(JSON.stringify(body));
 }
 
@@ -642,7 +770,7 @@ function createIndexHtml() {
       }
 
       const hostname = location.hostname || '127.0.0.1';
-      return 'http://' + hostname + ':' + instance.port + '/?token=' + encodeURIComponent(token);
+      return location.protocol + '//' + hostname + ':' + instance.port + '/?token=' + encodeURIComponent(token);
     }
 
     function renderInstances(instances) {
@@ -741,14 +869,14 @@ async function notifyStatus(
 ) {
     const answerText = lastAnswer?.trim() ? lastAnswer : "no answer yet";
     const bridgeText = serverUrl ? `; bridge: ${serverUrl}` : "; bridge: offline";
-    const kdeText = formatKdeDeviceInfo(await getKdeConnectDeviceId());
+    const kdeText = formatKdeDeviceInfo(await detectKdeConnectDevice());
     ctx.ui.notify(
         `mobile status — pending smoke: ${pendingSmoke ? "yes" : "no"}; busy: ${busy ? "yes" : "no"}; last answer: ${answerText}${bridgeText}; ${kdeText}`,
     );
 }
 
 async function notifyDevices(ctx: ExtensionCommandContext) {
-    ctx.ui.notify(`mobile devices — ${formatKdeDeviceInfo(await getKdeConnectDeviceId())}`);
+    ctx.ui.notify(`mobile devices — ${formatKdeDeviceInfo(await detectKdeConnectDevice())}`);
 }
 
 async function notifyDevicesDebug(ctx: ExtensionCommandContext) {
@@ -756,7 +884,7 @@ async function notifyDevicesDebug(ctx: ExtensionCommandContext) {
 }
 
 function notifyHelp(ctx: ExtensionCommandContext) {
-    ctx.ui.notify("mobile help — use /mobile smoke, /mobile status, /mobile devices, /mobile devices debug, or /mobile link");
+    ctx.ui.notify("mobile help — use /mobile smoke, /mobile status, /mobile devices, /mobile devices debug, /mobile link, /mobile rotate, or /mobile logs");
 }
 
 export default function (pi: ExtensionAPI) {
@@ -768,18 +896,20 @@ export default function (pi: ExtensionAPI) {
     let smokeCtx: ExtensionCommandContext | undefined;
     let busy = false;
     let answers: string[] = [];
-    let server: Server | undefined;
+    let server: HttpServer | HttpsServer | undefined;
     let serverPort: number | undefined;
     let instanceCwd = process.cwd();
     let instanceLabel = path.basename(instanceCwd) || instanceCwd;
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-    const token = randomBytes(32).toString("hex");
+    let token = randomBytes(32).toString("hex");
+    let previousTlsRejectUnauthorized: string | undefined;
+    let tlsOverrideApplied = false;
     const instanceId = randomUUID();
     const requestsByClient = new Map<string, number[]>();
 
     const getServerUrl = () => (
         serverPort
-            ? `http://${resolveStatusHost(process.env.PI_MOBILE_BRIDGE_HOST, networkInterfaces())}:${serverPort}/?token=${token}`
+            ? `${getServerProtocol()}://${resolveStatusHost(process.env.PI_MOBILE_BRIDGE_HOST, networkInterfaces())}:${serverPort}/?token=${token}`
             : undefined
     );
 
@@ -824,12 +954,18 @@ export default function (pi: ExtensionAPI) {
             const child = (childProcess.spawn || spawn)("kdeconnect-cli", args, {
                 stdio: "ignore",
             });
-            child.on("error", () => undefined);
-            child.on("exit", () => undefined);
+            child.on("error", (error) => {
+                addBridgeLog(`kde share error: ${error instanceof Error ? error.message : String(error)}`);
+            });
+            child.on("exit", (code) => {
+                if (typeof code === "number" && code !== 0) {
+                    addBridgeLog(`kde share exit: ${code}`);
+                }
+            });
             child.unref?.();
             return deviceId;
-        } catch {
-            // Ignore share failures.
+        } catch (error) {
+            addBridgeLog(`kde share setup failed: ${error instanceof Error ? error.message : String(error)}`);
             return undefined;
         }
     };
@@ -854,6 +990,16 @@ export default function (pi: ExtensionAPI) {
                 resolve();
             });
         });
+
+        if (tlsOverrideApplied) {
+            if (typeof previousTlsRejectUnauthorized === "string") {
+                process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTlsRejectUnauthorized;
+            } else {
+                delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+            }
+            tlsOverrideApplied = false;
+            previousTlsRejectUnauthorized = undefined;
+        }
     };
 
     const startServer = async () => {
@@ -863,7 +1009,13 @@ export default function (pi: ExtensionAPI) {
 
         const requestHandler = async (request: IncomingMessage, response: ServerResponse) => {
             try {
-                const url = new URL(request.url || "/", `http://${STATUS_HOST}`);
+                const url = new URL(request.url || "/", `${getServerProtocol()}://${STATUS_HOST}`);
+                const clientIp = request.socket.remoteAddress || "unknown";
+                const logUnauthorized = (receivedToken?: string) => {
+                    addBridgeLog(
+                        `auth failure path=${url.pathname} ip=${clientIp} token=${truncateDebugValue(receivedToken || "missing", 24)}`,
+                    );
+                };
 
                 if (request.method === "GET" && url.pathname === "/health") {
                     json(response, 200, { alive: true, timestamp: Date.now() });
@@ -871,7 +1023,9 @@ export default function (pi: ExtensionAPI) {
                 }
 
                 if (request.method === "GET" && url.pathname === "/answers") {
-                    if (url.searchParams.get("token") !== token) {
+                    const requestToken = extractToken(request, url);
+                    if (requestToken !== token) {
+                        logUnauthorized(requestToken);
                         json(response, 401, { error: "unauthorized" });
                         return;
                     }
@@ -881,7 +1035,9 @@ export default function (pi: ExtensionAPI) {
                 }
 
                 if (request.method === "GET" && url.pathname === "/instances") {
-                    if (url.searchParams.get("token") !== token) {
+                    const requestToken = extractToken(request, url);
+                    if (requestToken !== token) {
+                        logUnauthorized(requestToken);
                         json(response, 401, { error: "unauthorized" });
                         return;
                     }
@@ -893,8 +1049,10 @@ export default function (pi: ExtensionAPI) {
                 if (request.method === "POST" && url.pathname === "/send") {
                     const rawBody = await readBody(request);
                     const body = rawBody ? JSON.parse(rawBody) as { token?: unknown; message?: unknown } : {};
+                    const requestToken = extractToken(request, url, body.token);
 
-                    if (body.token !== token) {
+                    if (requestToken !== token) {
+                        logUnauthorized(requestToken);
                         json(response, 401, { error: "unauthorized" });
                         return;
                     }
@@ -904,9 +1062,25 @@ export default function (pi: ExtensionAPI) {
                         return;
                     }
 
-                    const clientIp = request.socket.remoteAddress || "unknown";
-                    if (!consumeRateLimit(requestsByClient, clientIp)) {
-                        json(response, 429, { error: "rate limit exceeded" });
+                    if (body.message.length > MAX_MESSAGE_LENGTH) {
+                        json(response, 400, { error: `message too long (max ${MAX_MESSAGE_LENGTH} chars)` });
+                        return;
+                    }
+
+                    const rateLimitKey = requestToken ? `token:${requestToken}` : `ip:${clientIp}`;
+                    const rateLimit = consumeRateLimit(
+                        requestsByClient,
+                        rateLimitKey,
+                        getRateLimitMaxRequests(),
+                    );
+                    if (!rateLimit.allowed) {
+                        addBridgeLog(`rate limit hit path=${url.pathname} key=${truncateDebugValue(rateLimitKey, 48)} retryAfter=${rateLimit.retryAfter}`);
+                        json(
+                            response,
+                            429,
+                            { error: "rate limit exceeded", retryAfter: rateLimit.retryAfter },
+                            { "Retry-After": String(rateLimit.retryAfter) },
+                        );
                         return;
                     }
 
@@ -922,7 +1096,9 @@ export default function (pi: ExtensionAPI) {
                 }
 
                 if (request.method === "GET" && url.pathname === "/") {
-                    if (url.searchParams.get("token") !== token) {
+                    const requestToken = extractToken(request, url);
+                    if (requestToken !== token) {
+                        logUnauthorized(requestToken);
                         json(response, 401, { error: "unauthorized" });
                         return;
                     }
@@ -937,9 +1113,19 @@ export default function (pi: ExtensionAPI) {
             }
         };
 
-        server = createServer((request, response) => {
-            void requestHandler(request, response);
-        });
+        if (isHttpsEnabled() && typeof process.env.NODE_TLS_REJECT_UNAUTHORIZED === "undefined") {
+            previousTlsRejectUnauthorized = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+            process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+            tlsOverrideApplied = true;
+        }
+
+        server = isHttpsEnabled()
+            ? createHttpsServer({ key: SELF_SIGNED_KEY, cert: SELF_SIGNED_CERT }, (request, response) => {
+                void requestHandler(request, response);
+            })
+            : createHttpServer((request, response) => {
+                void requestHandler(request, response);
+            });
 
         const requestedPort = parsePort(process.env.PI_MOBILE_BRIDGE_PORT);
         const listenPort = requestedPort === 0 ? 0 : await findAvailablePort(requestedPort);
@@ -956,6 +1142,7 @@ export default function (pi: ExtensionAPI) {
                 }
 
                 serverPort = address.port;
+                addBridgeLog(`server start protocol=${getServerProtocol()} port=${serverPort}`);
                 resolve();
             });
         });
@@ -991,6 +1178,24 @@ export default function (pi: ExtensionAPI) {
                 return;
             }
 
+            if (subcommand === "rotate") {
+                token = randomBytes(32).toString("hex");
+                await writeOwnRegistry().catch(() => undefined);
+                addBridgeLog("token rotated");
+                ctx.ui.notify(`mobile rotate — ${getServerUrl() || "bridge offline"}`);
+                return;
+            }
+
+            if (subcommand === "logs") {
+                const recentLogs = getBridgeLogs().slice(-RECENT_LOG_COUNT);
+                ctx.ui.notify(
+                    recentLogs.length
+                        ? `mobile logs — ${recentLogs.join("\n")}`
+                        : "mobile logs — no bridge logs yet",
+                );
+                return;
+            }
+
             if (subcommand === "link") {
                 const serverUrl = getServerUrl();
                 if (!server?.listening || !serverUrl) {
@@ -1002,7 +1207,7 @@ export default function (pi: ExtensionAPI) {
                 ctx.ui.notify(
                     deviceId
                         ? `mobile link sent to ${deviceId} — ${serverUrl}`
-                        : `mobile link sent — ${serverUrl}; no KDE device`,
+                        : `mobile link sent — ${serverUrl}; ${formatKdeDeviceInfo(await detectKdeConnectDevice())}`,
                 );
                 return;
             }

@@ -2961,4 +2961,651 @@ describe("Mobile Bridge Extension", () => {
       await shutdownServer();
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Phase 2: Hardening
+  // ─────────────────────────────────────────────────────────────────────────
+  describe("Phase 2: Hardening", () => {
+    // ── shared helpers ──────────────────────────────────────────────────────
+
+    const startServer = async (
+      overrideNotify?: ReturnType<typeof vi.fn>
+    ): Promise<{
+      serverUrl: string;
+      token: string;
+      port: number;
+      mockCtx: ExtensionCommandContext;
+      mockNotify: ReturnType<typeof vi.fn>;
+    }> => {
+      const sessionStartHandlers = registeredHooks.get("session_start");
+      expect(sessionStartHandlers).toBeDefined();
+
+      const mockNotify = overrideNotify ?? vi.fn();
+      const mockCtx: ExtensionCommandContext = {
+        ui: { notify: mockNotify },
+        cwd: "/test",
+        model: "test-model",
+      } as any;
+
+      await sessionStartHandlers![0]({}, mockCtx);
+
+      const mobileCommand = registeredCommands.get("mobile");
+      await mobileCommand!.handler("status", mockCtx);
+
+      const allCalls: string[] = mockNotify.mock.calls.map((c: any[]) => c[0]);
+      const urlCall = allCalls.find((s) => /https?:\/\//.test(s));
+      expect(urlCall).toBeDefined();
+
+      const urlMatch = urlCall!.match(
+        /https?:\/\/[^\s]+:(\d+)\/(?:\?token=([a-f0-9]+))?/
+      );
+      expect(urlMatch).not.toBeNull();
+
+      const port = parseInt(urlMatch![1], 10);
+      const token = urlMatch![2] ?? "";
+      const proto = urlCall!.includes("https://") ? "https" : "http";
+      const serverUrl = `${proto}://127.0.0.1:${port}`;
+
+      return { serverUrl, token, port, mockCtx, mockNotify };
+    };
+
+    const shutdownServer = async () => {
+      const handlers = registeredHooks.get("session_shutdown");
+      if (handlers) {
+        const ctx: ExtensionCommandContext = {
+          ui: { notify: vi.fn() },
+          cwd: "/test",
+          model: "test-model",
+        } as any;
+        try { await handlers[0]({}, ctx); } catch (_) { /* ignore */ }
+      }
+    };
+
+    beforeEach(() => {
+      process.env.PI_MOBILE_BRIDGE_PORT = "0";
+    });
+
+    afterEach(async () => {
+      await shutdownServer();
+      delete process.env.PI_MOBILE_BRIDGE_HTTPS;
+      delete process.env.PI_MOBILE_BRIDGE_RATE_LIMIT;
+    });
+
+    // ── 1. HTTPS Support ──────────────────────────────────────────────────
+    describe("HTTPS Support", () => {
+      it("starts HTTP server normally when PI_MOBILE_BRIDGE_HTTPS is not set", async () => {
+        const { serverUrl } = await startServer();
+        expect(serverUrl).toMatch(/^http:\/\//);
+      });
+
+      it("starts HTTPS server when PI_MOBILE_BRIDGE_HTTPS=1", async () => {
+        process.env.PI_MOBILE_BRIDGE_HTTPS = "1";
+
+        const sessionStartHandlers = registeredHooks.get("session_start");
+        expect(sessionStartHandlers).toBeDefined();
+
+        const mockNotify = vi.fn();
+        const mockCtx: ExtensionCommandContext = {
+          ui: { notify: mockNotify },
+          cwd: "/test",
+          model: "test-model",
+        } as any;
+
+        await sessionStartHandlers![0]({}, mockCtx);
+
+        const mobileCommand = registeredCommands.get("mobile");
+        await mobileCommand!.handler("status", mockCtx);
+
+        const allCalls: string[] = mockNotify.mock.calls.map((c: any[]) => c[0]);
+        const urlCall = allCalls.find((s) => /https:\/\//.test(s));
+        expect(urlCall).toBeDefined();
+        expect(urlCall).toMatch(/^.*https:\/\//);
+      });
+
+      it("GET /health over HTTPS returns { alive: true }", async () => {
+        process.env.PI_MOBILE_BRIDGE_HTTPS = "1";
+
+        const sessionStartHandlers = registeredHooks.get("session_start");
+        const mockNotify = vi.fn();
+        const mockCtx: ExtensionCommandContext = {
+          ui: { notify: mockNotify },
+          cwd: "/test",
+          model: "test-model",
+        } as any;
+
+        await sessionStartHandlers![0]({}, mockCtx);
+
+        const mobileCommand = registeredCommands.get("mobile");
+        await mobileCommand!.handler("status", mockCtx);
+
+        const allCalls: string[] = mockNotify.mock.calls.map((c: any[]) => c[0]);
+        const urlCall = allCalls.find((s) => /https:\/\//.test(s));
+        expect(urlCall).toBeDefined();
+
+        const urlMatch = urlCall!.match(/https:\/\/[^\s]+:(\d+)/);
+        expect(urlMatch).not.toBeNull();
+        const port = parseInt(urlMatch![1], 10);
+
+        // Use https with self-signed cert
+        const httpsModule = await import("node:https");
+        const agent = new httpsModule.Agent({ rejectUnauthorized: false });
+
+        const response = await fetch(`https://127.0.0.1:${port}/health`, {
+          // @ts-ignore — Node 18+ undici dispatcher / agent
+          agent,
+        });
+        expect(response.ok).toBe(true);
+        const data = await response.json();
+        expect(data).toHaveProperty("alive", true);
+      });
+
+      it("/mobile status URL starts with https:// when HTTPS enabled", async () => {
+        process.env.PI_MOBILE_BRIDGE_HTTPS = "1";
+
+        const sessionStartHandlers = registeredHooks.get("session_start");
+        const mockNotify = vi.fn();
+        const mockCtx: ExtensionCommandContext = {
+          ui: { notify: mockNotify },
+          cwd: "/test",
+          model: "test-model",
+        } as any;
+
+        await sessionStartHandlers![0]({}, mockCtx);
+
+        const mobileCommand = registeredCommands.get("mobile");
+        mockNotify.mockClear();
+        await mobileCommand!.handler("status", mockCtx);
+
+        const allCalls: string[] = mockNotify.mock.calls.map((c: any[]) => c[0]);
+        const urlCall = allCalls.find((s) => /https:\/\//.test(s));
+        expect(urlCall).toBeDefined();
+        expect(urlCall).toMatch(/https:\/\/[\d.]+:\d+/);
+      });
+    });
+
+    // ── 2. Token in Authorization Header ─────────────────────────────────
+    describe("Token in Authorization Header", () => {
+      it("POST /send accepts token via Authorization: Bearer header", async () => {
+        const { serverUrl, token } = await startServer();
+
+        const response = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`,
+          },
+          body: JSON.stringify({ message: "hello from bearer" }),
+        });
+
+        expect(response.ok).toBe(true);
+        const data = await response.json();
+        expect(data).toHaveProperty("success", true);
+      });
+
+      it("POST /send with body token still works (backward compatible)", async () => {
+        const { serverUrl, token } = await startServer();
+
+        const response = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, message: "body token works" }),
+        });
+
+        expect(response.ok).toBe(true);
+      });
+
+      it("GET /answers accepts token via Authorization: Bearer header", async () => {
+        const { serverUrl, token } = await startServer();
+
+        const response = await fetch(`${serverUrl}/answers`, {
+          headers: { "Authorization": `Bearer ${token}` },
+        });
+
+        expect(response.ok).toBe(true);
+        const data = await response.json();
+        expect(data).toHaveProperty("answers");
+      });
+
+      it("GET /answers with query param token still works (backward compatible)", async () => {
+        const { serverUrl, token } = await startServer();
+
+        const response = await fetch(`${serverUrl}/answers?token=${token}`);
+        expect(response.ok).toBe(true);
+      });
+
+      it("GET /instances accepts token via Authorization: Bearer header", async () => {
+        const { serverUrl, token } = await startServer();
+
+        const response = await fetch(`${serverUrl}/instances`, {
+          headers: { "Authorization": `Bearer ${token}` },
+        });
+
+        // Should be 200, not 401
+        expect(response.status).not.toBe(401);
+        expect(response.ok).toBe(true);
+      });
+
+      it("POST /send with invalid bearer token returns 401", async () => {
+        const { serverUrl } = await startServer();
+
+        const response = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer notvalidtoken",
+          },
+          body: JSON.stringify({ message: "rejected" }),
+        });
+
+        expect(response.status).toBe(401);
+      });
+    });
+
+    // ── 3. Token Rotation ─────────────────────────────────────────────────
+    describe("Token Rotation", () => {
+      it("/mobile rotate command exists and calls notify", async () => {
+        const { mockCtx, mockNotify } = await startServer();
+
+        const mobileCommand = registeredCommands.get("mobile");
+        mockNotify.mockClear();
+        await mobileCommand!.handler("rotate", mockCtx);
+
+        expect(mockNotify).toHaveBeenCalled();
+      });
+
+      it("/mobile rotate generates a new token (notify includes new URL)", async () => {
+        const { mockCtx, mockNotify, token: oldToken } = await startServer();
+
+        const mobileCommand = registeredCommands.get("mobile");
+        mockNotify.mockClear();
+        await mobileCommand!.handler("rotate", mockCtx);
+
+        const allCalls: string[] = mockNotify.mock.calls.map((c: any[]) => c[0]);
+        const urlCall = allCalls.find((s) => /token=/.test(s));
+        expect(urlCall).toBeDefined();
+
+        // New token should differ from old token
+        const newTokenMatch = urlCall!.match(/token=([a-f0-9]+)/);
+        expect(newTokenMatch).not.toBeNull();
+        const newToken = newTokenMatch![1];
+        expect(newToken).not.toBe(oldToken);
+        expect(newToken.length).toBeGreaterThanOrEqual(32);
+      });
+
+      it("old token rejected after rotation", async () => {
+        const { serverUrl, mockCtx, token: oldToken } = await startServer();
+
+        const mobileCommand = registeredCommands.get("mobile");
+        await mobileCommand!.handler("rotate", mockCtx);
+
+        // Old token should now be rejected
+        const response = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: oldToken, message: "should fail" }),
+        });
+
+        expect(response.status).toBe(401);
+      });
+
+      it("new token works after rotation", async () => {
+        const { serverUrl, mockCtx, mockNotify } = await startServer();
+
+        const mobileCommand = registeredCommands.get("mobile");
+        mockNotify.mockClear();
+        await mobileCommand!.handler("rotate", mockCtx);
+
+        // Extract new token from notification
+        const allCalls: string[] = mockNotify.mock.calls.map((c: any[]) => c[0]);
+        const urlCall = allCalls.find((s) => /token=/.test(s));
+        expect(urlCall).toBeDefined();
+        const newTokenMatch = urlCall!.match(/token=([a-f0-9]+)/);
+        expect(newTokenMatch).not.toBeNull();
+        const newToken = newTokenMatch![1];
+
+        const response = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: newToken, message: "new token works" }),
+        });
+
+        expect(response.ok).toBe(true);
+        const data = await response.json();
+        expect(data).toHaveProperty("success", true);
+      });
+    });
+
+    // ── 4. Enhanced Rate Limiting ─────────────────────────────────────────
+    describe("Enhanced Rate Limiting", () => {
+      it("PI_MOBILE_BRIDGE_RATE_LIMIT=5 overrides default limit", async () => {
+        process.env.PI_MOBILE_BRIDGE_RATE_LIMIT = "5";
+
+        // Reinitialize with the new env
+        registeredCommands.clear();
+        registeredHooks.clear();
+        const freshModule = await import(
+          "../extensions/mobile-bridge/index.ts?t=rate" + Date.now()
+        );
+        freshModule.default(mockPi);
+
+        const { serverUrl, token } = await startServer();
+
+        // 5 requests succeed
+        for (let i = 0; i < 5; i++) {
+          const r = await fetch(`${serverUrl}/send`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token, message: `msg ${i}` }),
+          });
+          expect(r.ok).toBe(true);
+        }
+
+        // 6th should be rate-limited
+        const r6 = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, message: "over limit" }),
+        });
+        expect(r6.status).toBe(429);
+      });
+
+      it("429 response includes Retry-After header or retryAfter field", async () => {
+        const { serverUrl, token } = await startServer();
+
+        // Exhaust default limit (10)
+        for (let i = 0; i < 10; i++) {
+          await fetch(`${serverUrl}/send`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token, message: `msg ${i}` }),
+          });
+        }
+
+        const r = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, message: "over" }),
+        });
+
+        expect(r.status).toBe(429);
+
+        // Either header or body field must be present
+        const hasHeader = r.headers.has("Retry-After");
+        const body = await r.json();
+        const hasField =
+          typeof body.retryAfter === "number" ||
+          typeof body["retry-after"] === "number" ||
+          typeof body.retryAfterMs === "number";
+
+        expect(hasHeader || hasField).toBe(true);
+      });
+
+      it("rate limit is tracked per-token, not just per-IP", async () => {
+        // This test verifies that rotating the token resets the rate limit counter
+        const { serverUrl, mockCtx, mockNotify } = await startServer();
+
+        const mobileCommand = registeredCommands.get("mobile");
+
+        // Exhaust rate limit with first token
+        const statusCalls: string[] = mockNotify.mock.calls.map((c: any[]) => c[0]);
+        const urlCall = statusCalls.find((s) => /token=/.test(s));
+        const tokenMatch = urlCall?.match(/token=([a-f0-9]+)/);
+        const firstToken = tokenMatch ? tokenMatch[1] : "";
+
+        for (let i = 0; i < 10; i++) {
+          await fetch(`${serverUrl}/send`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: firstToken, message: `msg ${i}` }),
+          });
+        }
+
+        // Rotate to get a new token
+        mockNotify.mockClear();
+        await mobileCommand!.handler("rotate", mockCtx);
+
+        const rotateCalls: string[] = mockNotify.mock.calls.map((c: any[]) => c[0]);
+        const rotateUrlCall = rotateCalls.find((s) => /token=/.test(s));
+        const newTokenMatch = rotateUrlCall?.match(/token=([a-f0-9]+)/);
+        const newToken = newTokenMatch ? newTokenMatch[1] : "";
+
+        // New token should not be rate-limited yet
+        const r = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: newToken, message: "fresh token" }),
+        });
+
+        expect(r.ok).toBe(true);
+        expect(r.status).not.toBe(429);
+      });
+    });
+
+    // ── 5. Input Validation ───────────────────────────────────────────────
+    describe("Input Validation", () => {
+      it("POST /send with empty message returns 400", async () => {
+        const { serverUrl, token } = await startServer();
+
+        const response = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, message: "" }),
+        });
+
+        expect(response.status).toBe(400);
+      });
+
+      it("POST /send with message > 10000 chars returns 400 with length error", async () => {
+        const { serverUrl, token } = await startServer();
+
+        const longMessage = "x".repeat(10001);
+        const response = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, message: longMessage }),
+        });
+
+        expect(response.status).toBe(400);
+        const data = await response.json();
+        expect(data).toHaveProperty("error");
+        expect(data.error).toMatch(/length|too long|max|limit/i);
+      });
+
+      it("POST /send with non-string message returns 400", async () => {
+        const { serverUrl, token } = await startServer();
+
+        const response = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, message: 12345 }),
+        });
+
+        expect(response.status).toBe(400);
+      });
+
+      it("POST /send with missing message field returns 400", async () => {
+        const { serverUrl, token } = await startServer();
+
+        const response = await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
+
+        expect(response.status).toBe(400);
+      });
+    });
+
+    // ── 6. Error Logging ──────────────────────────────────────────────────
+    describe("Error Logging", () => {
+      it("getBridgeLogs() is exported and returns an array", async () => {
+        const module = await import("../extensions/mobile-bridge/index.ts");
+        expect(typeof module.getBridgeLogs).toBe("function");
+        const logs = module.getBridgeLogs();
+        expect(Array.isArray(logs)).toBe(true);
+      });
+
+      it("getBridgeLogs() returns string array", async () => {
+        const module = await import("../extensions/mobile-bridge/index.ts");
+        const logs = module.getBridgeLogs();
+        for (const entry of logs) {
+          expect(typeof entry).toBe("string");
+        }
+      });
+
+      it("getBridgeLogs() includes server start entry after session_start", async () => {
+        await startServer();
+
+        const module = await import("../extensions/mobile-bridge/index.ts");
+        const logs = module.getBridgeLogs();
+        const hasStartEntry = logs.some(
+          (l) => /start|listen|server|port/i.test(l)
+        );
+        expect(hasStartEntry).toBe(true);
+      });
+
+      it("getBridgeLogs() includes auth failure entry after bad token", async () => {
+        const { serverUrl } = await startServer();
+
+        await fetch(`${serverUrl}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: "badtoken", message: "fail" }),
+        });
+
+        const module = await import("../extensions/mobile-bridge/index.ts");
+        const logs = module.getBridgeLogs();
+        const hasAuthEntry = logs.some(
+          (l) => /auth|unauthori[sz]|401|invalid token/i.test(l)
+        );
+        expect(hasAuthEntry).toBe(true);
+      });
+
+      it("getBridgeLogs() includes rate limit hit entry after 429", async () => {
+        const { serverUrl, token } = await startServer();
+
+        for (let i = 0; i <= 10; i++) {
+          await fetch(`${serverUrl}/send`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token, message: `m${i}` }),
+          });
+        }
+
+        const module = await import("../extensions/mobile-bridge/index.ts");
+        const logs = module.getBridgeLogs();
+        const hasRateEntry = logs.some(
+          (l) => /rate.?limit|429|too many/i.test(l)
+        );
+        expect(hasRateEntry).toBe(true);
+      });
+
+      it("/mobile logs command notifies recent bridge log entries", async () => {
+        const { mockCtx, mockNotify } = await startServer();
+
+        const mobileCommand = registeredCommands.get("mobile");
+        mockNotify.mockClear();
+        await mobileCommand!.handler("logs", mockCtx);
+
+        expect(mockNotify).toHaveBeenCalled();
+        // Notification should include some log content
+        const notification = mockNotify.mock.calls[0][0] as string;
+        expect(notification.length).toBeGreaterThan(0);
+      });
+    });
+
+    // ── 7. Graceful KDE Connect Degradation ──────────────────────────────
+    describe("Graceful KDE Connect Degradation", () => {
+      it("agent_end does not throw when KDE Connect spawn errors", async () => {
+        spawnMock.mockImplementation((_cmd: string, _args: string[]) => {
+          const child = new EventEmitter() as any;
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = vi.fn();
+          setTimeout(() => child.emit("error", new Error("kdeconnect unavailable")), 5);
+          return child;
+        });
+
+        const agentEndHandlers = registeredHooks.get("agent_end");
+        expect(agentEndHandlers).toBeDefined();
+
+        await expect(
+          agentEndHandlers![0]({
+            messages: [{ role: "assistant", content: "hi" }],
+          })
+        ).resolves.not.toThrow();
+      });
+
+      it("agent_end logs KDE failure when spawn errors", async () => {
+        spawnMock.mockImplementation((_cmd: string, _args: string[]) => {
+          const child = new EventEmitter() as any;
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = vi.fn();
+          setTimeout(() => child.emit("error", new Error("kdeconnect unavailable")), 5);
+          return child;
+        });
+
+        const agentEndHandlers = registeredHooks.get("agent_end");
+        await agentEndHandlers![0]({
+          messages: [{ role: "assistant", content: "response" }],
+        });
+
+        // Allow async error handling to complete
+        await new Promise((r) => setTimeout(r, 50));
+
+        const module = await import("../extensions/mobile-bridge/index.ts");
+        if (typeof module.getBridgeLogs === "function") {
+          const logs = module.getBridgeLogs();
+          const hasKdeError = logs.some(
+            (l) => /kde|kdeconnect|notification|error/i.test(l)
+          );
+          expect(hasKdeError).toBe(true);
+        } else {
+          // getBridgeLogs not yet implemented — this test will FAIL on that dependency
+          expect(typeof module.getBridgeLogs).toBe("function");
+        }
+      });
+
+      it("/mobile status shows kde: unavailable when spawn detection fails", async () => {
+        // Mock spawnSync to fail (KDE Connect not installed)
+        vi.doMock("node:child_process", () => ({
+          spawn: spawnMock,
+          spawnSync: vi.fn(() => {
+            throw new Error("ENOENT");
+          }),
+        }));
+
+        registeredCommands.clear();
+        registeredHooks.clear();
+        const freshModule = await import(
+          "../extensions/mobile-bridge/index.ts?t=kdeunavail" + Date.now()
+        );
+        freshModule.default(mockPi);
+
+        process.env.PI_MOBILE_BRIDGE_PORT = "0";
+        delete process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID;
+
+        const sessionStartHandlers = registeredHooks.get("session_start");
+        const mockNotify = vi.fn();
+        const mockCtx: ExtensionCommandContext = {
+          ui: { notify: mockNotify },
+          cwd: "/test",
+          model: "test-model",
+        } as any;
+
+        await sessionStartHandlers![0]({}, mockCtx);
+
+        const mobileCommand = registeredCommands.get("mobile");
+        mockNotify.mockClear();
+        await mobileCommand!.handler("status", mockCtx);
+
+        const allCalls: string[] = mockNotify.mock.calls.map((c: any[]) => c[0]);
+        const statusCall = allCalls.find(
+          (s) => /kde.*unavailab|kde.*none|kde.*not.*detected/i.test(s)
+        );
+        expect(statusCall).toBeDefined();
+      });
+    });
+  });
 });
