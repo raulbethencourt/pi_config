@@ -29,6 +29,9 @@ describe("Mobile Bridge Extension", () => {
   let mockChildProcesses: any[];
 
   beforeEach(async () => {
+    // Keep existing tests on HTTP unless they opt into HTTPS explicitly.
+    process.env.PI_MOBILE_BRIDGE_HTTPS = "0";
+
     // Reset mocks
     registeredCommands = new Map();
     registeredHooks = new Map();
@@ -86,6 +89,8 @@ describe("Mobile Bridge Extension", () => {
     delete process.env.PI_MOBILE_BRIDGE_HOST;
     delete process.env.PI_MOBILE_BRIDGE_PORT;
     delete process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID;
+    delete process.env.PI_MOBILE_BRIDGE_HTTPS;
+    delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
   });
 
   it("registers 'mobile' slash command", () => {
@@ -2569,7 +2574,7 @@ describe("Mobile Bridge Extension", () => {
         const path = await import("node:path");
         
         const registryDir = path.join(tmpDir, "instances");
-        const files = await fs.readdir(registryDir);
+        const files = (await fs.readdir(registryDir)).filter((file) => file.endsWith(".json"));
         expect(files.length).toBe(2);
 
         // Read both registry files and verify different cwds
@@ -3033,7 +3038,9 @@ describe("Mobile Bridge Extension", () => {
 
     // ── 1. HTTPS Support ──────────────────────────────────────────────────
     describe("HTTPS Support", () => {
-      it("starts HTTP server normally when PI_MOBILE_BRIDGE_HTTPS is not set", async () => {
+      it("starts HTTP server when PI_MOBILE_BRIDGE_HTTPS is 0", async () => {
+        process.env.PI_MOBILE_BRIDGE_HTTPS = "0";
+
         const { serverUrl } = await startServer();
         expect(serverUrl).toMatch(/^http:\/\//);
       });

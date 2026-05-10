@@ -168,7 +168,7 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
 }
 
 function isHttpsEnabled(): boolean {
-    return process.env.PI_MOBILE_BRIDGE_HTTPS === "1";
+    return process.env.PI_MOBILE_BRIDGE_HTTPS !== "0";
 }
 
 function getServerProtocol(): "http" | "https" {
@@ -705,42 +705,48 @@ function createIndexHtml() {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Pi Mobile Bridge</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #111827; color: #f9fafb; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #282828; color: #d4be98; }
     main { max-width: 44rem; margin: 0 auto; display: grid; gap: 1rem; }
-    section { background: #0f172a; border: 1px solid #1f2937; border-radius: 1rem; padding: 1rem; }
+    section { background: #32302f; border: 1px solid #45403d; border-radius: 1rem; padding: 1rem; }
+    h1, h2 { margin-top: 0; color: #d8a657; }
+    code { color: #d8a657; }
     textarea, input, button { width: 100%; box-sizing: border-box; margin-top: 0.75rem; }
     textarea, input, button, .instance-link { padding: 0.75rem; border-radius: 0.75rem; }
-    textarea, input { border: 1px solid #374151; background: #1f2937; color: inherit; }
-    button, .instance-link { border: 0; background: #2563eb; color: white; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
-    pre, ul { white-space: pre-wrap; background: #1f2937; padding: 0.75rem; border-radius: 0.75rem; }
-    ul { margin: 0; padding-left: 1.25rem; }
+    textarea, input, pre { border: 1px solid #45403d; background: #3c3836; color: inherit; }
+    button, .instance-link { border: 0; background: #7daea3; color: #282828; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; transition: background 0.15s ease; }
+    button:hover, .instance-link:hover { background: #89b482; }
+    pre, ul { white-space: pre-wrap; padding: 0.75rem; border-radius: 0.75rem; }
+    pre { margin-bottom: 0; }
+    ul { margin: 0; padding-left: 1.25rem; background: #3c3836; border: 1px solid #45403d; }
     li + li { margin-top: 0.5rem; }
-    .muted { color: #9ca3af; }
+    .muted { color: #928374; }
     .instance-grid { display: grid; gap: 0.75rem; margin-top: 0.75rem; }
-    .instance-card { display: grid; gap: 0.35rem; padding: 0.75rem; border-radius: 0.75rem; background: #1f2937; }
-    .instance-meta { color: #9ca3af; font-size: 0.9rem; }
+    .instance-card { display: grid; gap: 0.35rem; padding: 0.75rem; border-radius: 0.75rem; background: #3c3836; border: 1px solid #45403d; }
+    .instance-meta { color: #a89984; font-size: 0.9rem; }
+    .status-ready, .status-success { color: #a9b665; }
+    .status-error { color: #ea6962; }
   </style>
 </head>
 <body>
   <main>
-    <section>
-      <h1>Pi Mobile Bridge</h1>
+    <section aria-labelledby="send-heading">
+      <h1 id="send-heading">Pi Mobile Bridge</h1>
       <p class="muted">Use the token from <code>/mobile status</code> to send prompts and inspect recent answers.</p>
       <input id="token" placeholder="token" />
       <textarea id="message" rows="5" placeholder="Send a message to Pi"></textarea>
       <button id="send" type="button">Send</button>
-      <pre id="result">Ready.</pre>
+      <pre id="result" class="status-ready">Ready.</pre>
+    </section>
+
+    <section aria-labelledby="answers-heading">
+      <h2 id="answers-heading">Recent answers</h2>
+      <ul id="answers"><li class="muted">No answers yet.</li></ul>
     </section>
 
     <section aria-labelledby="instances-heading">
       <h2 id="instances-heading">Pi instances</h2>
       <p class="muted">Switch to another running Pi instance. Tokens are reused as a temporary MVP placeholder.</p>
       <div id="instances" class="instance-grid">Loading instances…</div>
-    </section>
-
-    <section aria-labelledby="answers-heading">
-      <h2 id="answers-heading">Recent answers</h2>
-      <ul id="answers"><li class="muted">No answers yet.</li></ul>
     </section>
   </main>
   <script>
@@ -750,9 +756,15 @@ function createIndexHtml() {
     const result = document.getElementById('result');
     const instancesContainer = document.getElementById('instances');
     const answersList = document.getElementById('answers');
+    const tokenFromUrl = params.get('token');
 
     function getToken() {
-      return (params.get('token') || tokenInput.value || '').trim();
+      return (tokenFromUrl || tokenInput.value || '').trim();
+    }
+
+    function setResultStatus(value, type) {
+      result.className = type === 'error' ? 'status-error' : type === 'success' ? 'status-success' : 'status-ready';
+      result.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
     }
 
     function escapeHtml(value) {
@@ -837,6 +849,10 @@ function createIndexHtml() {
 
     tokenInput.value = getToken();
 
+    if (tokenFromUrl) {
+      tokenInput.setAttribute('style', 'display:none');
+    }
+
     document.getElementById('send').addEventListener('click', async () => {
       const token = getToken();
       const message = messageInput.value.trim();
@@ -846,9 +862,10 @@ function createIndexHtml() {
         body: JSON.stringify({ token, message }),
       });
       const data = await response.json().catch(() => ({}));
-      result.textContent = JSON.stringify(data, null, 2);
+      setResultStatus(data, response.ok ? 'success' : 'error');
 
       if (response.ok) {
+        messageInput.value = '';
         await loadAnswers();
       }
     });
