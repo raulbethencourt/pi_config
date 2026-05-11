@@ -2,6 +2,30 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { EventEmitter } from "events";
 
+let actualChildProcess: any;
+let spawnMock: any;
+let spawnSyncMock: any;
+
+vi.mock("node:child_process", async () => {
+  actualChildProcess = await vi.importActual("node:child_process");
+
+  return {
+    ...actualChildProcess,
+    spawn: (...args: any[]) => {
+      if (typeof spawnMock !== "function") {
+        throw new Error("spawn mock not initialized");
+      }
+      return spawnMock(...args);
+    },
+    spawnSync: (...args: any[]) => {
+      if (typeof spawnSyncMock === "function") {
+        return spawnSyncMock(...args);
+      }
+      return actualChildProcess.spawnSync(...args);
+    },
+  };
+});
+
 /**
  * Phase 0 Mobile Bridge Tests
  * Target: /home/rabeta/.pi/agent/extensions/mobile-bridge/index.ts
@@ -25,7 +49,6 @@ describe("Mobile Bridge Extension", () => {
   let registeredCommands: Map<string, { description: string; handler: Function }>;
   let registeredHooks: Map<string, Function[]>;
   let mobileBridgeModule: any;
-  let spawnMock: any;
   let mockChildProcesses: any[];
 
   beforeEach(async () => {
@@ -43,6 +66,7 @@ describe("Mobile Bridge Extension", () => {
       mockChild.stdout = new EventEmitter();
       mockChild.stderr = new EventEmitter();
       mockChild.kill = vi.fn();
+      mockChild.unref = vi.fn();
       mockChildProcesses.push({ command, args, child: mockChild });
       
       // Simulate successful spawn by default
@@ -50,10 +74,23 @@ describe("Mobile Bridge Extension", () => {
       
       return mockChild;
     });
-    
-    vi.doMock('node:child_process', () => ({
-      spawn: spawnMock,
-    }));
+
+    spawnSyncMock = vi.fn((command: string, args: string[], options?: any) => {
+      if (command === "openssl") {
+        return actualChildProcess.spawnSync(command, args, options);
+      }
+
+      return {
+        stdout: Buffer.from(""),
+        stderr: Buffer.from(""),
+        status: 0,
+        signal: null,
+        pid: 12345,
+        output: [null, Buffer.from(""), Buffer.from("")],
+      };
+    });
+
+    vi.resetModules();
 
     // Mock pi SDK
     mockPi = {
@@ -85,7 +122,6 @@ describe("Mobile Bridge Extension", () => {
       if (child.kill) child.kill();
     });
     vi.clearAllMocks();
-    vi.doUnmock('node:child_process');
     delete process.env.PI_MOBILE_BRIDGE_HOST;
     delete process.env.PI_MOBILE_BRIDGE_PORT;
     delete process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID;
@@ -995,8 +1031,6 @@ describe("Mobile Bridge Extension", () => {
      * 6. If detection fails/empty, fallback to no -d flag
      */
 
-    let spawnSyncMock: any;
-
     beforeEach(() => {
       // Mock spawnSync in addition to spawn
       spawnSyncMock = vi.fn(() => ({
@@ -1006,11 +1040,6 @@ describe("Mobile Bridge Extension", () => {
         signal: null,
         pid: 12345,
         output: [null, Buffer.from("a648fd25583644aa9c89057dfb068171\n"), Buffer.from("")],
-      }));
-
-      vi.doMock('node:child_process', () => ({
-        spawn: spawnMock,
-        spawnSync: spawnSyncMock,
       }));
 
       // Ensure env var is NOT set for these tests
@@ -1370,18 +1399,13 @@ describe("Mobile Bridge Extension", () => {
       process.env.PI_MOBILE_BRIDGE_PORT = "0";
 
       // Mock spawnSync to return device ID
-      const spawnSyncMock = vi.fn(() => ({
+      spawnSyncMock = vi.fn(() => ({
         stdout: Buffer.from("a648fd25583644aa9c89057dfb068171\n"),
         stderr: Buffer.from(""),
         status: 0,
         signal: null,
         pid: 12345,
         output: [null, Buffer.from("a648fd25583644aa9c89057dfb068171\n"), Buffer.from("")],
-      }));
-
-      vi.doMock('node:child_process', () => ({
-        spawn: spawnMock,
-        spawnSync: spawnSyncMock,
       }));
 
       // Reinitialize extension
@@ -1420,18 +1444,13 @@ describe("Mobile Bridge Extension", () => {
       process.env.PI_MOBILE_BRIDGE_PORT = "0";
 
       // Mock spawnSync to return empty
-      const spawnSyncMock = vi.fn(() => ({
+      spawnSyncMock = vi.fn(() => ({
         stdout: Buffer.from(""),
         stderr: Buffer.from(""),
         status: 0,
         signal: null,
         pid: 12345,
         output: [null, Buffer.from(""), Buffer.from("")],
-      }));
-
-      vi.doMock('node:child_process', () => ({
-        spawn: spawnMock,
-        spawnSync: spawnSyncMock,
       }));
 
       // Reinitialize extension
@@ -1524,18 +1543,13 @@ describe("Mobile Bridge Extension", () => {
       delete process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID;
 
       // Mock spawnSync to return empty
-      const spawnSyncMock = vi.fn(() => ({
+      spawnSyncMock = vi.fn(() => ({
         stdout: Buffer.from(""),
         stderr: Buffer.from(""),
         status: 0,
         signal: null,
         pid: 12345,
         output: [null, Buffer.from(""), Buffer.from("")],
-      }));
-
-      vi.doMock('node:child_process', () => ({
-        spawn: spawnMock,
-        spawnSync: spawnSyncMock,
       }));
 
       // Reinitialize extension
@@ -1566,18 +1580,13 @@ describe("Mobile Bridge Extension", () => {
       delete process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID;
 
       // Mock spawnSync to return device ID
-      const spawnSyncMock = vi.fn(() => ({
+      spawnSyncMock = vi.fn(() => ({
         stdout: Buffer.from("a648fd25583644aa9c89057dfb068171\n"),
         stderr: Buffer.from(""),
         status: 0,
         signal: null,
         pid: 12345,
         output: [null, Buffer.from("a648fd25583644aa9c89057dfb068171\n"), Buffer.from("")],
-      }));
-
-      vi.doMock('node:child_process', () => ({
-        spawn: spawnMock,
-        spawnSync: spawnSyncMock,
       }));
 
       // Reinitialize extension
@@ -1843,17 +1852,11 @@ describe("Mobile Bridge Extension", () => {
      * 3. New /mobile devices debug command for diagnostics
      */
 
-    let spawnSyncMock: any;
-
     beforeEach(() => {
       delete process.env.PI_MOBILE_BRIDGE_KDE_DEVICE_ID;
       process.env.PI_MOBILE_BRIDGE_PORT = "0";
 
       spawnSyncMock = vi.fn();
-      vi.doMock('node:child_process', () => ({
-        spawn: spawnMock,
-        spawnSync: spawnSyncMock,
-      }));
     });
 
     it("RED: fallback to parsing normal --list-devices output when --id-only returns empty", async () => {
@@ -3180,17 +3183,21 @@ describe("Mobile Bridge Extension", () => {
         expect(urlMatch).not.toBeNull();
         const port = parseInt(urlMatch![1], 10);
 
-        // Use https with self-signed cert
-        const httpsModule = await import("node:https");
-        const agent = new httpsModule.Agent({ rejectUnauthorized: false });
+        const previousTlsSetting = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
-        const response = await fetch(`https://127.0.0.1:${port}/health`, {
-          // @ts-ignore — Node 18+ undici dispatcher / agent
-          agent,
-        });
-        expect(response.ok).toBe(true);
-        const data = await response.json();
-        expect(data).toHaveProperty("alive", true);
+        try {
+          const response = await fetch(`https://127.0.0.1:${port}/health`);
+          expect(response.ok).toBe(true);
+          const data = await response.json();
+          expect(data).toHaveProperty("alive", true);
+        } finally {
+          if (typeof previousTlsSetting === "string") {
+            process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTlsSetting;
+          } else {
+            delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+          }
+        }
       });
 
       it("/mobile status URL starts with https:// when HTTPS enabled", async () => {
@@ -3663,12 +3670,9 @@ describe("Mobile Bridge Extension", () => {
 
       it("/mobile status shows kde: unavailable when spawn detection fails", async () => {
         // Mock spawnSync to fail (KDE Connect not installed)
-        vi.doMock("node:child_process", () => ({
-          spawn: spawnMock,
-          spawnSync: vi.fn(() => {
-            throw new Error("ENOENT");
-          }),
-        }));
+        spawnSyncMock = vi.fn(() => {
+          throw new Error("ENOENT");
+        });
 
         registeredCommands.clear();
         registeredHooks.clear();

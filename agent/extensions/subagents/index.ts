@@ -123,6 +123,7 @@ const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 	video_extract: path.join(EXT_BASE, "video-extract", "index.ts"),
 	token_stats: path.join(TOOLS_DIR, "token-stats.ts"),
 	git_inspect: path.join(TOOLS_DIR, "git-inspect.ts"),
+	memory: path.join(EXT_BASE, "memory", "index.ts"),
 	youtube_search: path.join(EXT_BASE, "youtube-search", "index.ts"),
 	google_image_search: path.join(EXT_BASE, "google-image-search", "index.ts"),
 };

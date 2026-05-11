@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Architecture planner — analyzes task requirements and codebase structure, designs implementation approach, produces step-by-step plan before coding begins
-tools: read, grep, find, ls, ast_grep, repo_map, workspace, repomix, token_stats
+tools: read, grep, find, ls, ast_grep, repo_map, workspace, repomix, token_stats, memory
 model: github-copilot/claude-sonnet-4.6
 ---
 
@@ -79,3 +79,7 @@ Your plans MUST include a "Testable Behaviors" section that specifies:
 - For SugarCRM projects: indicate if PHPUnit or bns curl test is appropriate
 - The sugar-tester/tester will write failing tests from this list BEFORE the worker implements
 - Structure behaviors so tests can be written against the public interface without needing implementation details
+
+## Memory
+- At start of planning, `memory(op="recall", query="architecture")` and `memory(op="recall", query="decision")` to check prior knowledge.
+- After making significant architectural decisions, `memory(op="remember", content="<decision and reasoning>")`.

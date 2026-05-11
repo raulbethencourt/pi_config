@@ -258,7 +258,7 @@ Before adding new agents, optimize the existing team and build supporting infras
   - Separate from session continuity — this is long-term knowledge, not single-session state
   - Needs: schema design, retrieval strategy, staleness/expiry handling, token budget impact analysis
 - **Note**: Pi's built-in session system already persists conversation history, tool results, and branch state in JSONL files. Persistent memory should complement (not duplicate) this.
-- **Status**: [ ] Pending — evaluate Graphiti vs native before implementation
+- **Status**: [x] Complete (Phase 1) — simple markdown memory files at `~/.pi/data/memory/<project-hash>.md`. Tool: `memory(remember|recall|forget|list)`. Available to planner + scout. Evaluated Graphiti (too heavy, LLM cost), Memory MCP (subagents can't access), SQLite+FTS5 (over-engineered for start). Phase 2 (SQLite upgrade) and Phase 3 (semantic search) deferred until markdown approach proves insufficient.
 
 #### 📋 Shared Workspace / Blackboard
 
@@ -370,6 +370,7 @@ Before adding new agents, optimize the existing team and build supporting infras
 
 ## Changelog
 
+- **2026-05-11**: Persistent Memory Phase 1 complete. Simple markdown-based memory (`extensions/memory/index.ts`). Per-project files at `~/.pi/data/memory/`. Tool ops: remember/recall/forget/list. Added to planner + scout agents. Evaluated Graphiti (rejected: heavy infra + LLM cost), Memory MCP (rejected: subagents can't access), SQLite+FTS5 (deferred: over-engineered for start). Critic recommended starting simple. 13 memory tests, 479 full suite.
 - **2026-05-10**: Mobile Bridge Phase 2 (Hardening) complete. HTTPS self-signed cert, Authorization Bearer header, token rotation (/mobile rotate), configurable rate limiting, input validation, error logging (/mobile logs + getBridgeLogs()), graceful KDE degradation. 117 mobile-bridge tests, 465 full suite.
 - **2026-05-10**: Mobile Bridge Phase 0 + Phase 1 complete. Android LAN companion for pi — phone sends messages via local HTTP bridge, receives KDE Connect notifications on final answers. Features: auto LAN IP detection, auto KDE device detection, `/mobile link` URL sharing, `/mobile status`/`devices`/`devices debug`, token auth, rate limiting, last 10 answers history, multi-instance registry with dynamic ports, landing page instance picker. 87 mobile-bridge tests, 435 full suite. Plan at `MOBILE_BRIDGE_PLAN.md`.
 - **2026-05-10**: Gemini adoption. Verified `github-copilot/gemini-3-flash-preview` and `github-copilot/gemini-3.1-pro-preview` work. Moved critic + researcher to `gemini-3.1-pro-preview` for third-vendor perspective and likely better price stability. Free opencode models (`minimax-m2.5-free`, `nemotron-3-super-free`) verified working but reserved for non-critical future helpers.
