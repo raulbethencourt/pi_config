@@ -11,5 +11,10 @@
 	},
 	"scout": {
 		"complex": "github-copilot/gpt-5.4"
+	},
+	"fallback": {
+		"simple": "opencode/minimax-m2.5-free",
+		"complex": "opencode/minimax-m2.5-free",
+		"last-resort": "opencode/minimax-m2.5-free"
 	}
 }
