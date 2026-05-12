@@ -15,7 +15,7 @@ import { Type } from "typebox";
 import * as formatUtils from "../shared/format.ts";
 import { extractTextContent } from "../shared/content.ts";
 import { initTelemetryDb, logRun, logToolCalls } from "./telemetry.ts";
-import { loadRouting, loadFallbackConfig, resolveModel } from "./routing.ts";
+import { loadRouting, loadFallbackConfig, resolveModel, resolveFallbackModel } from "./routing.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -262,11 +262,30 @@ export function truncLine(text: string, maxWidth: number): string {
 
 // ── Subagent Execution ────────────────────────────────────────────────
 
+// Quota exhaustion detection for auto-retry
+function isQuotaExhausted(stderr: string, exitCode: number): boolean {
+	if (exitCode === 429 || exitCode === 403) return true;
+	const patterns = [
+		/quota.*exhausted/i,
+		/rate.*limit/i,
+		/429/i,
+		/too.*many.*requests/i,
+		/billing.*quota/i,
+		/insufficient.*quota/i,
+		/monthly.*limit/i,
+		/daily.*limit/i,
+		/token.*limit/i,
+		/context.*limit.*exceeded/i,
+		/max.*tokens.*exceeded/i,
+	];
+	return patterns.some((p) => p.test(stderr));
+}
+
 async function buildPiArgs(
 	agent: AgentConfig,
 	task: string,
 	cwd: string,
-): Promise<{ piArgs: string[]; tempDir: string }> {
+): Promise<{ piArgs: string[]; tempDir: string; tier: string }> {
 	const piBin = resolvePiBinary();
 	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sub-"));
 
@@ -346,7 +365,7 @@ async function buildPiArgs(
 		args.push(`Task: ${task}`);
 	}
 
-	return { piArgs: [piBin.command, ...args], tempDir, usedFallback };
+	return { piArgs: [piBin.command, ...args], tempDir, usedFallback, tier: complexityTier };
 }
 
 // Re-export for backward compatibility (tests import from here)
@@ -369,7 +388,7 @@ async function runSubagent(
 	signal: AbortSignal | undefined,
 	onUpdate?: (progress: AgentProgress) => void,
 ): Promise<AgentResult> {
-	const { piArgs, tempDir, usedFallback } = await buildPiArgs(agent, task, cwd);
+	const { piArgs, tempDir, usedFallback: initialUsedFallback, tier } = await buildPiArgs(agent, task, cwd);
 	const command = piArgs[0];
 	const spawnArgs = piArgs.slice(1);
 
@@ -523,7 +542,123 @@ async function runSubagent(
 	} catch {}
 
 	result.exitCode = exitCode;
-	progress.status = exitCode === 0 && !progress.error ? "completed" : "failed";
+
+	// Auto-retry on quota exhaustion
+	if (exitCode !== 0 && !initialUsedFallback && isQuotaExhausted(stderrBuf, exitCode)) {
+		const fallbackModel = resolveFallbackModel(tier as any, FALLBACK_CONFIG);
+		const modelIdx = piArgs.indexOf("--models");
+		const fallbackPiArgs = [...piArgs];
+		if (modelIdx !== -1 && modelIdx + 1 < fallbackPiArgs.length) {
+			fallbackPiArgs[modelIdx + 1] = fallbackModel;
+		}
+		const fallbackSpawnArgs = fallbackPiArgs.slice(1);
+
+		const retryExitCode = await new Promise<number>((resolve) => {
+			const proc = spawn(command, fallbackSpawnArgs, {
+				cwd,
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+
+			let buf = "";
+			let retryStderrBuf = "";
+
+			const processLine = (line: string) => {
+				if (!line.trim()) return;
+				try {
+					const evt = JSON.parse(line) as any;
+					progress.durationMs = Date.now() - startTime;
+					if (evt.type === "tool_execution_start") {
+						progress.toolCount++;
+						progress.currentTool = evt.toolName;
+						progress.currentToolArgs = extractToolArgsPreview((evt.args || {}) as Record<string, unknown>);
+						fireUpdate();
+					}
+					if (evt.type === "tool_execution_end") {
+						if (progress.currentTool) {
+							progress.recentTools.push({
+								tool: progress.currentTool,
+								args: progress.currentToolArgs || "",
+							});
+							if (progress.recentTools.length > 20) {
+								progress.recentTools.splice(0, progress.recentTools.length - 20);
+							}
+						}
+						progress.currentTool = undefined;
+						progress.currentToolArgs = undefined;
+						fireUpdate();
+					}
+					if (evt.type === "tool_result_end") {
+						fireUpdate();
+					}
+					if (evt.type === "message_end" && evt.message) {
+						if (evt.message.role === "assistant") {
+							result.usage.turns++;
+							const u = evt.message.usage;
+							if (u) {
+								result.usage.input += u.input || 0;
+								result.usage.output += u.output || 0;
+								result.usage.cacheRead += u.cacheRead || 0;
+								result.usage.cacheWrite += u.cacheWrite || 0;
+								result.usage.cost += u.cost?.total || 0;
+								progress.tokens = result.usage.input + result.usage.output;
+							}
+							if (evt.message.model) result.model = evt.message.model;
+							if (evt.message.errorMessage) progress.error = evt.message.errorMessage;
+							const text = extractTextContent(evt.message.content);
+							if (text) {
+								result.output = text;
+								const proseLines: string[] = [];
+								let inCodeBlock = false;
+								for (const line of text.split("\n")) {
+									if (line.trimStart().startsWith("```")) {
+										inCodeBlock = !inCodeBlock;
+										continue;
+									}
+									if (!inCodeBlock && line.trim()) {
+										proseLines.push(line.trim());
+									}
+								}
+								if (proseLines.length > 0) {
+									progress.lastMessage = proseLines.slice(0, 3).join(" ");
+								}
+							}
+						}
+						fireUpdate();
+					}
+				} catch {
+					// Non-JSON lines are expected
+				}
+			};
+
+			proc.stdout.on("data", (d: Buffer) => {
+				buf += d.toString();
+				const lines = buf.split("\n");
+				buf = lines.pop() || "";
+				lines.forEach(processLine);
+			});
+
+			proc.stderr.on("data", (d: Buffer) => {
+				retryStderrBuf += d.toString();
+			});
+
+			proc.on("close", (code) => {
+				if (buf.trim()) processLine(buf);
+				if (code !== 0 && retryStderrBuf.trim() && !progress.error) {
+					progress.error = retryStderrBuf.trim();
+				}
+				resolve(code ?? 1);
+			});
+
+			proc.on("error", () => resolve(1));
+		});
+
+		result.exitCode = retryExitCode;
+		result.model = fallbackModel;
+		result.usedFallback = true;
+		console.log(`[fallback] Quota exhausted, retried with ${fallbackModel}`);
+	}
+
+	progress.status = result.exitCode === 0 && !progress.error ? "completed" : "failed";
 	progress.durationMs = Date.now() - startTime;
 	if (progress.error) result.output = result.output || `Error: ${progress.error}`;
 
