@@ -14,6 +14,45 @@ export interface RoutingConfig {
 	};
 }
 
+// ── Fallback Configuration ──────────────────────────────────────────────
+
+export interface FallbackConfig {
+	simple: string;
+	complex: string;
+	lastResort: string;
+}
+
+const DEFAULT_FALLBACK: FallbackConfig = {
+	simple: "opencode/minimax-m2.5-free",
+	complex: "opencode/minimax-m2.5-free",
+	lastResort: "opencode/minimax-m2.5-free",
+};
+
+/** Check if fallback mode is active (env var or config) */
+export function isFallbackMode(): boolean {
+	return (
+		process.env.PI_FALLBACK_MODE === "1" ||
+		process.env.PI_FALLBACK_MODE === "true"
+	);
+}
+
+/** Get the fallback model for a given complexity tier */
+export function resolveFallbackModel(
+	tier: ComplexityTier,
+	fallbackConfig: FallbackConfig = DEFAULT_FALLBACK,
+): string {
+	switch (tier) {
+		case "simple":
+			return fallbackConfig.simple;
+		case "complex":
+			return fallbackConfig.complex;
+		default:
+			return fallbackConfig.lastResort;
+	}
+}
+
+// ── Existing Code ────────────────────────────────────────────────────────
+
 // Risk keywords that always trigger "complex"
 const RISK_KEYWORDS = [
 	/\bauth\b/i,
@@ -97,31 +136,57 @@ export function resolveModel(
 	agentName: string,
 	task: string,
 	routing: RoutingConfig,
-): { model: string; tier: ComplexityTier } {
+	fallbackConfig?: FallbackConfig,
+): { model: string; tier: ComplexityTier; usedFallback: boolean } {
 	const tier = scoreComplexity(task);
+
+	// If fallback mode is active, skip routing and use fallback
+	if (isFallbackMode()) {
+		return {
+			model: resolveFallbackModel(tier, fallbackConfig ?? DEFAULT_FALLBACK),
+			tier,
+			usedFallback: true,
+		};
+	}
+
 	const agentRouting = routing[agentName];
 
 	if (!agentRouting) {
-		return { model: defaultModel, tier };
+		return { model: defaultModel, tier, usedFallback: false };
 	}
 
 	if (tier === "simple" && agentRouting.simple) {
-		return { model: agentRouting.simple, tier };
+		return { model: agentRouting.simple, tier, usedFallback: false };
 	}
 
 	if (tier === "complex" && agentRouting.complex) {
-		return { model: agentRouting.complex, tier };
+		return { model: agentRouting.complex, tier, usedFallback: false };
 	}
 
-	return { model: defaultModel, tier };
+	return { model: defaultModel, tier, usedFallback: false };
 }
 
 export function loadRouting(configDir: string): RoutingConfig {
 	const filePath = path.join(configDir, "routing.json");
 	try {
 		const raw = fs.readFileSync(filePath, "utf-8");
-		return JSON.parse(raw) as RoutingConfig;
+		const parsed = JSON.parse(raw) as RoutingConfig & { fallback?: FallbackConfig };
+		// Remove fallback key to return only agent routing (backward compatible)
+		const { fallback, ...agentRouting } = parsed;
+		return agentRouting;
 	} catch {
 		return {};
+	}
+}
+
+/** Load fallback config from routing.json */
+export function loadFallbackConfig(configDir: string): FallbackConfig {
+	const filePath = path.join(configDir, "routing.json");
+	try {
+		const raw = fs.readFileSync(filePath, "utf-8");
+		const parsed = JSON.parse(raw) as { fallback?: FallbackConfig };
+		return parsed.fallback ?? DEFAULT_FALLBACK;
+	} catch {
+		return DEFAULT_FALLBACK;
 	}
 }

@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS runs (
   turns INTEGER DEFAULT 0,
   duration_ms INTEGER DEFAULT 0,
   exit_code INTEGER,
-  cwd TEXT
+  cwd TEXT,
+  used_fallback INTEGER DEFAULT 0,
+  fallback_model TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_timestamp ON runs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent);
@@ -65,6 +67,7 @@ export function logRun(
 		task: string;
 		exitCode: number;
 		model?: string;
+		usedFallback?: boolean;
 		usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number };
 		progress: { durationMs: number };
 	},
@@ -74,8 +77,8 @@ export function logRun(
 	if (!db) return null;
 	try {
 		const stmt = db.prepare(`
-			INSERT INTO runs (timestamp, session_id, agent, model, task_summary, input_tokens, output_tokens, cache_read, cache_write, cost_usd, turns, duration_ms, exit_code, cwd)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO runs (timestamp, session_id, agent, model, task_summary, input_tokens, output_tokens, cache_read, cache_write, cost_usd, turns, duration_ms, exit_code, cwd, used_fallback, fallback_model)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`);
 		stmt.run(
 			new Date().toISOString(),
@@ -92,6 +95,8 @@ export function logRun(
 			result.progress.durationMs,
 			result.exitCode,
 			cwd,
+			result.usedFallback ? 1 : 0,
+			result.usedFallback ? result.model ?? null : null,
 		);
 		const row = db.prepare("SELECT last_insert_rowid() as id").get();
 		return row?.id ?? null;

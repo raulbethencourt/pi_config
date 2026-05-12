@@ -15,7 +15,7 @@ import { Type } from "typebox";
 import * as formatUtils from "../shared/format.ts";
 import { extractTextContent } from "../shared/content.ts";
 import { initTelemetryDb, logRun, logToolCalls } from "./telemetry.ts";
-import { loadRouting, resolveModel } from "./routing.ts";
+import { loadRouting, loadFallbackConfig, resolveModel } from "./routing.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -55,6 +55,7 @@ interface AgentResult {
 	exitCode: number;
 	progress: AgentProgress;
 	model?: string;
+	usedFallback?: boolean;
 	usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number };
 }
 
@@ -110,6 +111,7 @@ function resolveContextModeExtension(): string | null {
 
 const CONTEXT_MODE_EXTENSION = resolveContextModeExtension();
 const ROUTING_CONFIG = loadRouting(path.dirname(AGENTS_DIR));
+const FALLBACK_CONFIG = loadFallbackConfig(path.dirname(AGENTS_DIR));
 
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 	web_search: path.join(EXT_BASE, "web-search", "index.ts"),
@@ -264,7 +266,7 @@ async function buildPiArgs(
 	agent: AgentConfig,
 	task: string,
 	cwd: string,
-): Promise<{ args: string[]; tempDir: string }> {
+): Promise<{ piArgs: string[]; tempDir: string }> {
 	const piBin = resolvePiBinary();
 	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sub-"));
 
@@ -322,7 +324,13 @@ async function buildPiArgs(
 		args.push("--extension", CONTEXT_MODE_EXTENSION);
 	}
 
-	const { model: routedModel, tier: complexityTier } = resolveModel(agent.model, agent.name, task, ROUTING_CONFIG);
+	const { model: routedModel, tier: complexityTier, usedFallback } = resolveModel(
+		agent.model,
+		agent.name,
+		task,
+		ROUTING_CONFIG,
+		FALLBACK_CONFIG,
+	);
 	args.push("--models", routedModel);
 	args.push("--append-system-prompt", promptPath);
 
@@ -338,7 +346,7 @@ async function buildPiArgs(
 		args.push(`Task: ${task}`);
 	}
 
-	return { args: [piBin.command, ...args], tempDir };
+	return { piArgs: [piBin.command, ...args], tempDir, usedFallback };
 }
 
 // Re-export for backward compatibility (tests import from here)
@@ -361,9 +369,9 @@ async function runSubagent(
 	signal: AbortSignal | undefined,
 	onUpdate?: (progress: AgentProgress) => void,
 ): Promise<AgentResult> {
-	const { args, tempDir } = await buildPiArgs(agent, task, cwd);
-	const command = args[0];
-	const spawnArgs = args.slice(1);
+	const { piArgs, tempDir, usedFallback } = await buildPiArgs(agent, task, cwd);
+	const command = piArgs[0];
+	const spawnArgs = piArgs.slice(1);
 
 	const result: AgentResult = {
 		agent: agent.name,
@@ -371,6 +379,7 @@ async function runSubagent(
 		output: "",
 		exitCode: 0,
 		model: agent.model,
+		usedFallback,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 		progress: {
 			agent: agent.name,
@@ -765,6 +774,7 @@ export default function (pi: ExtensionAPI) {
 						output: "",
 						exitCode: -1,
 						model: undefined,
+						usedFallback: false,
 						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 						progress: { agent: taskList[i].agent, status: "pending" as any, task: taskList[i].task, recentTools: [], toolCount: 0, tokens: 0, durationMs: 0, lastMessage: "" },
 					};
@@ -827,6 +837,7 @@ export default function (pi: ExtensionAPI) {
 					output: "",
 					exitCode: -1,
 					model: agent.model,
+					usedFallback: false,
 					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 					progress: { agent: params.agent!, status: "running" as const, task: params.task!, recentTools: [], toolCount: 0, tokens: 0, durationMs: 0, lastMessage: "" },
 				};
