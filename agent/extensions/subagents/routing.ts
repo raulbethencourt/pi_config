@@ -28,12 +28,30 @@ const DEFAULT_FALLBACK: FallbackConfig = {
 	lastResort: "opencode/minimax-m2.5-free",
 };
 
-/** Check if fallback mode is active (env var or config) */
+/** Check if fallback mode is active (env var, CLI command, or config) */
 export function isFallbackMode(): boolean {
-	return (
+	// Check env var first (backward compatibility)
+	if (
 		process.env.PI_FALLBACK_MODE === "1" ||
 		process.env.PI_FALLBACK_MODE === "true"
-	);
+	) {
+		return true;
+	}
+
+	// Check state file from CLI command
+	const stateFile = path.join(process.env.HOME || "~", ".pi", "agent", "extensions", "subagents", "fallback-mode.json");
+	try {
+		if (fs.existsSync(stateFile)) {
+			const state = JSON.parse(fs.readFileSync(stateFile, "utf-8"));
+			if (state.enabled === true) {
+				return true;
+			}
+		}
+	} catch {
+		// Ignore errors, fallback mode is off
+	}
+
+	return false;
 }
 
 /** Get the fallback model for a given complexity tier */
