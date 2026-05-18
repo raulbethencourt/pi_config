@@ -3,14 +3,15 @@ name: appmerge
 description: >
   Post-merge integrity check skill for SugarCRM projects. Use whenever an agent
   needs to compare two branches after a version-upgrade merge, detect lost or
-  damaged custom code (identified by CUSTOM_MARKERS), and produce a structured
-  risk report with optional patches and PDF export.
+  damaged custom code (identified by CUSTOM_MARKERS), and generate git patches
+  for CRITICAL/HIGH findings.
 ---
 
 # AppMerge — Post-Merge Integrity Check Skill
 
 Run a structured comparison between two SugarCRM branches after a version-upgrade
-merge and verify that **no custom functionality was lost or damaged**.
+merge, verify that **no custom functionality was lost or damaged**, and generate
+git patches for all CRITICAL/HIGH findings.
 
 ---
 
@@ -22,18 +23,7 @@ The agent must be run inside (or pointed at) the SugarCRM git repository that
 contains both the old and new branches as remote-tracking refs
 (`origin/OLD_BRANCH` and `origin/NEW_BRANCH`).
 
-### 2. Required tools
-
-```bash
-# PDF generation (Phase 4 only)
-which pandoc     # must be available
-which xelatex    # must be available (TeX Live or equivalent)
-
-# PDF metadata inspection (Phase 4 only)
-which pdfinfo    # poppler-utils
-```
-
-### 3. Configure the Variables table
+### 2. Configure the Variables table
 
 `COMPARISON_CONTEXT.md` is a **template file** with `{{VAR}}` placeholders.
 The user provides variable values when launching the skill (in their prompt).
@@ -213,70 +203,7 @@ Review areas:
 
 ---
 
-### Phase 3 — Risk Report
-
-Produce `COMPARISON_RESULTS.md` — **single file, max ~50–80 lines**.
-
-Output format (table only, no prose):
-
-```markdown
-| Risk | Category | Problem | File(s) |
-|------|----------|---------|---------|
-| CRITICAL | Security | Unauthenticated API endpoints | `custom/include/api/exampleApi.php:42` |
-| HIGH | Lost | Custom import files deleted | `modules/Import/customImport.php` |
-| MEDIUM | Modified | Dashlet property access change | `custom/clients/base/views/example/example.js:23` |
-```
-
-Rules:
-
-- Only list CRITICAL / HIGH / MEDIUM findings
-- Suppress findings matching Exception Rules
-- No prose, no progress notes, no LOW / whitespace-only / trivial changes
-- One line per finding
-
----
-
-### Phase 4 — PDF Export
-
-1. Create `COMPARISON_RESULTS_PDF.md` with YAML front matter and LaTeX headers:
-
-```yaml
----
-title: "Post-Merge Integrity Report"
-subtitle: "CLIENT_NAME"
-date: "YYYY-MM-DD"
-geometry: margin=1.8cm
-fontsize: 11pt
-header-includes:
-  - \usepackage{fancyhdr}
-  - \usepackage{booktabs}
-  - \usepackage{colortbl}
----
-```
-
-   Include: summary box (branches, scope, finding counts) + findings grouped by
-   risk level (CRITICAL → HIGH → MEDIUM), each as a numbered subsection with
-   Category, File, and Details fields.
-
-1. Generate the PDF:
-
-```bash
-pandoc COMPARISON_RESULTS_PDF.md -o COMPARISON_RESULTS.pdf \
-  --pdf-engine=xelatex -V mainfont="DejaVu Sans" -V monofont="DejaVu Sans Mono"
-```
-
-1. Verify:
-
-```bash
-pdfinfo COMPARISON_RESULTS.pdf   # expect 1–2 pages
-```
-
-1. The intermediate `COMPARISON_RESULTS_PDF.md` can be kept or deleted at the
-   user's discretion.
-
----
-
-### Phase 5 — Patch Generation
+### Phase 3 — Patch Generation
 
 For each **CRITICAL** or **HIGH** finding where the problem is a code difference
 (categories: **Modified** or **Lost**), generate a git patch in `patches/`.
@@ -348,6 +275,14 @@ After generating each patch:
 2. If it does not apply cleanly, add `# WARNING: May require manual conflict resolution`
    to the patch header
 
+After all patches are generated, print a summary table to the terminal:
+
+```
+| # | Patch file | Risk | Finding |
+|---|------------|------|---------|
+| 1 | patches/001-... | CRITICAL | ... |
+```
+
 ---
 
 ## Exclusion Patterns
@@ -400,10 +335,9 @@ git ls-tree -r --name-only origin/BRANCH -- <dir>/ | wc -l
 | Branch not found during Phase 0 | Stop and report to user — cannot proceed without both branches |
 | File missing in NEW_BRANCH | Check Exception Rules first; if not suppressed → flag as Lost |
 | File modified in NEW_BRANCH | Diff it; assess functional impact; apply Exception Rules |
-| Finding matches an Exception Rule | Omit entirely from `COMPARISON_RESULTS.md` |
-| CRITICAL/HIGH finding with code change | Generate a patch in `phases/` |
-| MEDIUM finding | Report only; no patch |
-| Phase 4 PDF fails | Check `pandoc` and `xelatex` are installed; verify YAML front matter |
+| Finding matches an Exception Rule | Omit entirely — skip it |
+| CRITICAL/HIGH finding with code change | Generate a patch in `patches/` |
+| MEDIUM finding | Report in terminal summary only; no patch |
 | Patch does not apply cleanly | Add `# WARNING` line to patch header |
 
 ---
@@ -412,10 +346,7 @@ git ls-tree -r --name-only origin/BRANCH -- <dir>/ | wc -l
 
 | File | Phase | Description |
 |------|-------|-------------|
-| `COMPARISON_RESULTS.md` | 3 | Risk table — the primary deliverable |
-| `COMPARISON_RESULTS_PDF.md` | 4 | Intermediate PDF-optimized Markdown |
-| `COMPARISON_RESULTS.pdf` | 4 | Presentation-ready PDF |
-| `patches/NNN-description.patch` | 5 | Git patches for CRITICAL/HIGH findings |
+| `patches/NNN-description.patch` | 3 | Git patches for CRITICAL/HIGH findings |
 
 ---
 
