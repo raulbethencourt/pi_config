@@ -4,7 +4,6 @@
  * Registers a single `subagent` tool with three agents: scout, researcher, worker.
  * Supports single and parallel execution. Output is verbal only (no file handoff).
  */
-import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,8 +13,10 @@ import { Container, Markdown, Spacer, Text, visibleWidth } from "@mariozechner/p
 import { Type } from "typebox";
 import * as formatUtils from "../shared/format.ts";
 import { extractTextContent } from "../shared/content.ts";
+import { registerFallbackCommand } from "./fallback.ts";
+import { resolveModel, resolveFallbackModel, loadRoutingConfig, type ComplexityTier } from "./routing.ts";
+import { spawnPiProcess } from "./runner.ts";
 import { initTelemetryDb, logRun, logToolCalls } from "./telemetry.ts";
-import { loadRouting, loadFallbackConfig, resolveModel, resolveFallbackModel } from "./routing.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -34,7 +35,7 @@ interface ToolEvent {
 	args: string;
 }
 
-interface AgentProgress {
+export interface AgentProgress {
 	agent: string;
 	status: "pending" | "running" | "completed" | "failed";
 	task: string;
@@ -48,7 +49,7 @@ interface AgentProgress {
 	error?: string;
 }
 
-interface AgentResult {
+export interface AgentResult {
 	agent: string;
 	task: string;
 	output: string;
@@ -110,8 +111,7 @@ function resolveContextModeExtension(): string | null {
 }
 
 const CONTEXT_MODE_EXTENSION = resolveContextModeExtension();
-const ROUTING_CONFIG = loadRouting(path.dirname(AGENTS_DIR));
-const FALLBACK_CONFIG = loadFallbackConfig(path.dirname(AGENTS_DIR));
+const { routing: ROUTING_CONFIG, fallback: FALLBACK_CONFIG } = loadRoutingConfig(path.dirname(AGENTS_DIR));
 
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
 	web_search: path.join(EXT_BASE, "web-search", "index.ts"),
@@ -274,9 +274,6 @@ function isQuotaExhausted(stderr: string, exitCode: number): boolean {
 		/insufficient.*quota/i,
 		/monthly.*limit/i,
 		/daily.*limit/i,
-		/token.*limit/i,
-		/context.*limit.*exceeded/i,
-		/max.*tokens.*exceeded/i,
 	];
 	return patterns.some((p) => p.test(stderr));
 }
@@ -285,7 +282,7 @@ async function buildPiArgs(
 	agent: AgentConfig,
 	task: string,
 	cwd: string,
-): Promise<{ piArgs: string[]; tempDir: string; tier: string }> {
+): Promise<{ piArgs: string[]; tempDir: string; tier: string; usedFallback: boolean }> {
 	const piBin = resolvePiBinary();
 	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sub-"));
 
@@ -398,7 +395,7 @@ async function runSubagent(
 		output: "",
 		exitCode: 0,
 		model: agent.model,
-		usedFallback,
+		usedFallback: initialUsedFallback,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 		progress: {
 			agent: agent.name,
@@ -414,248 +411,56 @@ async function runSubagent(
 
 	const startTime = Date.now();
 	const progress = result.progress;
-
 	const fireUpdate = throttle(() => {
 		progress.durationMs = Date.now() - startTime;
 		onUpdate?.(progress);
 	}, 150);
 
-	const exitCode = await new Promise<number>((resolve) => {
-		const proc = spawn(command, spawnArgs, {
-			cwd,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-
-		let buf = "";
-		let stderrBuf = "";
-
-		const processLine = (line: string) => {
-			if (!line.trim()) return;
-			try {
-				const evt = JSON.parse(line) as any;
-				progress.durationMs = Date.now() - startTime;
-
-				if (evt.type === "tool_execution_start") {
-					progress.toolCount++;
-					progress.currentTool = evt.toolName;
-					progress.currentToolArgs = extractToolArgsPreview((evt.args || {}) as Record<string, unknown>);
-					fireUpdate();
-				}
-
-				if (evt.type === "tool_execution_end") {
-					if (progress.currentTool) {
-						progress.recentTools.push({
-							tool: progress.currentTool,
-							args: progress.currentToolArgs || "",
-						});
-						// Keep last 20
-						if (progress.recentTools.length > 20) {
-							progress.recentTools.splice(0, progress.recentTools.length - 20);
-						}
-					}
-					progress.currentTool = undefined;
-					progress.currentToolArgs = undefined;
-					fireUpdate();
-				}
-
-				if (evt.type === "tool_result_end") {
-					fireUpdate();
-				}
-
-				if (evt.type === "message_end" && evt.message) {
-					if (evt.message.role === "assistant") {
-						result.usage.turns++;
-						const u = evt.message.usage;
-						if (u) {
-							result.usage.input += u.input || 0;
-							result.usage.output += u.output || 0;
-							result.usage.cacheRead += u.cacheRead || 0;
-							result.usage.cacheWrite += u.cacheWrite || 0;
-							result.usage.cost += u.cost?.total || 0;
-							progress.tokens = result.usage.input + result.usage.output;
-						}
-						if (evt.message.model) result.model = evt.message.model;
-						if (evt.message.errorMessage) progress.error = evt.message.errorMessage;
-
-						const text = extractTextContent(evt.message.content);
-						if (text) {
-							result.output = text;
-							// Extract just the prose "thinking" text — skip code blocks
-							const proseLines: string[] = [];
-							let inCodeBlock = false;
-							for (const line of text.split("\n")) {
-								if (line.trimStart().startsWith("```")) {
-									inCodeBlock = !inCodeBlock;
-									continue;
-								}
-								if (!inCodeBlock && line.trim()) {
-									proseLines.push(line.trim());
-								}
-							}
-							if (proseLines.length > 0) {
-								progress.lastMessage = proseLines.slice(0, 3).join(" ");
-							}
-						}
-					}
-
-					fireUpdate();
-				}
-			} catch {
-				// Non-JSON lines are expected
-			}
-		};
-
-		proc.stdout.on("data", (d: Buffer) => {
-			buf += d.toString();
-			const lines = buf.split("\n");
-			buf = lines.pop() || "";
-			lines.forEach(processLine);
-		});
-
-		proc.stderr.on("data", (d: Buffer) => {
-			stderrBuf += d.toString();
-		});
-
-		proc.on("close", (code) => {
-			if (buf.trim()) processLine(buf);
-			if (code !== 0 && stderrBuf.trim() && !progress.error) {
-				progress.error = stderrBuf.trim();
-			}
-			resolve(code ?? 1);
-		});
-
-		proc.on("error", () => resolve(1));
-
-		if (signal) {
-			const kill = () => {
-				proc.kill("SIGTERM");
-				setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 3000);
-			};
-			if (signal.aborted) kill();
-			else signal.addEventListener("abort", kill, { once: true });
-		}
-	});
-
-	// Cleanup temp dir
 	try {
-		fs.rmSync(tempDir, { recursive: true, force: true });
-	} catch {}
-
-	result.exitCode = exitCode;
-
-	// Auto-retry on quota exhaustion
-	if (exitCode !== 0 && !initialUsedFallback && isQuotaExhausted(stderrBuf, exitCode)) {
-		const fallbackModel = resolveFallbackModel(tier as any, FALLBACK_CONFIG);
-		const modelIdx = piArgs.indexOf("--models");
-		const fallbackPiArgs = [...piArgs];
-		if (modelIdx !== -1 && modelIdx + 1 < fallbackPiArgs.length) {
-			fallbackPiArgs[modelIdx + 1] = fallbackModel;
-		}
-		const fallbackSpawnArgs = fallbackPiArgs.slice(1);
-
-		const retryExitCode = await new Promise<number>((resolve) => {
-			const proc = spawn(command, fallbackSpawnArgs, {
-				cwd,
-				stdio: ["ignore", "pipe", "pipe"],
-			});
-
-			let buf = "";
-			let retryStderrBuf = "";
-
-			const processLine = (line: string) => {
-				if (!line.trim()) return;
-				try {
-					const evt = JSON.parse(line) as any;
-					progress.durationMs = Date.now() - startTime;
-					if (evt.type === "tool_execution_start") {
-						progress.toolCount++;
-						progress.currentTool = evt.toolName;
-						progress.currentToolArgs = extractToolArgsPreview((evt.args || {}) as Record<string, unknown>);
-						fireUpdate();
-					}
-					if (evt.type === "tool_execution_end") {
-						if (progress.currentTool) {
-							progress.recentTools.push({
-								tool: progress.currentTool,
-								args: progress.currentToolArgs || "",
-							});
-							if (progress.recentTools.length > 20) {
-								progress.recentTools.splice(0, progress.recentTools.length - 20);
-							}
-						}
-						progress.currentTool = undefined;
-						progress.currentToolArgs = undefined;
-						fireUpdate();
-					}
-					if (evt.type === "tool_result_end") {
-						fireUpdate();
-					}
-					if (evt.type === "message_end" && evt.message) {
-						if (evt.message.role === "assistant") {
-							result.usage.turns++;
-							const u = evt.message.usage;
-							if (u) {
-								result.usage.input += u.input || 0;
-								result.usage.output += u.output || 0;
-								result.usage.cacheRead += u.cacheRead || 0;
-								result.usage.cacheWrite += u.cacheWrite || 0;
-								result.usage.cost += u.cost?.total || 0;
-								progress.tokens = result.usage.input + result.usage.output;
-							}
-							if (evt.message.model) result.model = evt.message.model;
-							if (evt.message.errorMessage) progress.error = evt.message.errorMessage;
-							const text = extractTextContent(evt.message.content);
-							if (text) {
-								result.output = text;
-								const proseLines: string[] = [];
-								let inCodeBlock = false;
-								for (const line of text.split("\n")) {
-									if (line.trimStart().startsWith("```")) {
-										inCodeBlock = !inCodeBlock;
-										continue;
-									}
-									if (!inCodeBlock && line.trim()) {
-										proseLines.push(line.trim());
-									}
-								}
-								if (proseLines.length > 0) {
-									progress.lastMessage = proseLines.slice(0, 3).join(" ");
-								}
-							}
-						}
-						fireUpdate();
-					}
-				} catch {
-					// Non-JSON lines are expected
-				}
-			};
-
-			proc.stdout.on("data", (d: Buffer) => {
-				buf += d.toString();
-				const lines = buf.split("\n");
-				buf = lines.pop() || "";
-				lines.forEach(processLine);
-			});
-
-			proc.stderr.on("data", (d: Buffer) => {
-				retryStderrBuf += d.toString();
-			});
-
-			proc.on("close", (code) => {
-				if (buf.trim()) processLine(buf);
-				if (code !== 0 && retryStderrBuf.trim() && !progress.error) {
-					progress.error = retryStderrBuf.trim();
-				}
-				resolve(code ?? 1);
-			});
-
-			proc.on("error", () => resolve(1));
+		const { exitCode, stderrBuf } = await spawnPiProcess({
+			command,
+			spawnArgs,
+			cwd,
+			signal,
+			result,
+			progress,
+			startTime,
+			fireUpdate,
+			extractToolArgsPreview,
+			extractTextContent,
 		});
 
-		result.exitCode = retryExitCode;
-		result.model = fallbackModel;
-		result.usedFallback = true;
-		console.log(`[fallback] Quota exhausted, retried with ${fallbackModel}`);
+		result.exitCode = exitCode;
+
+		if (exitCode !== 0 && !initialUsedFallback && isQuotaExhausted(stderrBuf, exitCode)) {
+			const fallbackModel = resolveFallbackModel(tier as ComplexityTier, FALLBACK_CONFIG);
+			const fallbackPiArgs = [...piArgs];
+			const modelIdx = fallbackPiArgs.indexOf("--models");
+			if (modelIdx !== -1) fallbackPiArgs[modelIdx + 1] = fallbackModel;
+
+			progress.error = undefined;
+			const { exitCode: retryExitCode } = await spawnPiProcess({
+				command,
+				spawnArgs: fallbackPiArgs.slice(1),
+				cwd,
+				signal,
+				result,
+				progress,
+				startTime,
+				fireUpdate,
+				extractToolArgsPreview,
+				extractTextContent,
+			});
+
+			result.exitCode = retryExitCode;
+			result.model = fallbackModel;
+			result.usedFallback = true;
+			console.error(`[fallback] Quota exhausted, retried with ${fallbackModel}`);
+		}
+	} finally {
+		try {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		} catch {}
 	}
 
 	progress.status = result.exitCode === 0 && !progress.error ? "completed" : "failed";
@@ -847,6 +652,7 @@ function renderAgentProgress(
 // ── Extension ─────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
+	registerFallbackCommand(pi);
 	const config = loadConfig();
 	const maxConcurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 	agents = loadAgents();

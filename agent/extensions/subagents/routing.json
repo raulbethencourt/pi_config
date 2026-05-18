@@ -14,7 +14,7 @@
 	},
 	"fallback": {
 		"simple": "opencode/minimax-m2.5-free",
-		"complex": "opencode/minimax-m2.5-free",
-		"last-resort": "opencode/minimax-m2.5-free"
+		"standard": "opencode/deepseek-v4-flash-free",
+		"complex": "opencode/nemotron-3-super-free"
 	}
 }

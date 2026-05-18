@@ -4,6 +4,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { isFallbackMode } from "./fallback.ts";
 
 export type ComplexityTier = "simple" | "standard" | "complex";
 
@@ -18,41 +19,15 @@ export interface RoutingConfig {
 
 export interface FallbackConfig {
 	simple: string;
+	standard: string;
 	complex: string;
-	lastResort: string;
 }
 
 const DEFAULT_FALLBACK: FallbackConfig = {
 	simple: "opencode/minimax-m2.5-free",
+	standard: "opencode/minimax-m2.5-free",
 	complex: "opencode/minimax-m2.5-free",
-	lastResort: "opencode/minimax-m2.5-free",
 };
-
-/** Check if fallback mode is active (env var, CLI command, or config) */
-export function isFallbackMode(): boolean {
-	// Check env var first (backward compatibility)
-	if (
-		process.env.PI_FALLBACK_MODE === "1" ||
-		process.env.PI_FALLBACK_MODE === "true"
-	) {
-		return true;
-	}
-
-	// Check state file from CLI command
-	const stateFile = path.join(process.env.HOME || "~", ".pi", "agent", "extensions", "subagents", "fallback-mode.json");
-	try {
-		if (fs.existsSync(stateFile)) {
-			const state = JSON.parse(fs.readFileSync(stateFile, "utf-8"));
-			if (state.enabled === true) {
-				return true;
-			}
-		}
-	} catch {
-		// Ignore errors, fallback mode is off
-	}
-
-	return false;
-}
 
 /** Get the fallback model for a given complexity tier */
 export function resolveFallbackModel(
@@ -65,7 +40,7 @@ export function resolveFallbackModel(
 		case "complex":
 			return fallbackConfig.complex;
 		default:
-			return fallbackConfig.lastResort;
+			return fallbackConfig.standard;
 	}
 }
 
@@ -184,27 +159,25 @@ export function resolveModel(
 	return { model: defaultModel, tier, usedFallback: false };
 }
 
-export function loadRouting(configDir: string): RoutingConfig {
+export function loadRoutingConfig(configDir: string): { routing: RoutingConfig; fallback: FallbackConfig } {
 	const filePath = path.join(configDir, "routing.json");
 	try {
 		const raw = fs.readFileSync(filePath, "utf-8");
-		const parsed = JSON.parse(raw) as RoutingConfig & { fallback?: FallbackConfig };
-		// Remove fallback key to return only agent routing (backward compatible)
-		const { fallback, ...agentRouting } = parsed;
-		return agentRouting;
-	} catch {
-		return {};
-	}
-}
+		const parsed = JSON.parse(raw) as Record<string, any>;
+		const { fallback: rawFallback, ...agentRouting } = parsed;
 
-/** Load fallback config from routing.json */
-export function loadFallbackConfig(configDir: string): FallbackConfig {
-	const filePath = path.join(configDir, "routing.json");
-	try {
-		const raw = fs.readFileSync(filePath, "utf-8");
-		const parsed = JSON.parse(raw) as { fallback?: FallbackConfig };
-		return parsed.fallback ?? DEFAULT_FALLBACK;
+		const fallback: FallbackConfig = {
+			simple: rawFallback?.simple ?? DEFAULT_FALLBACK.simple,
+			standard:
+				rawFallback?.standard ??
+				rawFallback?.lastResort ??
+				rawFallback?.["last-resort"] ??
+				DEFAULT_FALLBACK.standard,
+			complex: rawFallback?.complex ?? DEFAULT_FALLBACK.complex,
+		};
+
+		return { routing: agentRouting as RoutingConfig, fallback };
 	} catch {
-		return DEFAULT_FALLBACK;
+		return { routing: {}, fallback: DEFAULT_FALLBACK };
 	}
 }
