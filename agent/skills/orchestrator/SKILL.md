@@ -5,6 +5,35 @@ description: Top-level session orchestration rules — subagent routing, context
 
 # Session Orchestration
 
+## Hard Rule: Delegate First, Always
+
+At depth 0 you have exactly TWO tools: `subagent` and `ask_user_question`.
+Every other tool (`read`, `write`, `edit`, `bash`, `safe_bash`, `grep`, `find`, `ls`, `web_search`, `web_fetch`, all `mcp`/`chrome_devtools_*`/`github_*` tools) is BLOCKED.
+Do not attempt them — they will fail and waste a turn. Your FIRST action on every user turn is one of:
+
+- `subagent({ agent, task })` — for any read, write, search, fetch, run, test
+- `ask_user_question` — only when requirements are genuinely ambiguous
+
+Quick mapping (memorize, act without deliberation):
+
+| User intent / your instinct | First action |
+|---|---|
+| "let me check / read / look at the file" | `subagent({ agent: "scout", task: ... })` |
+| grep / find / ls / trace usage | `subagent({ agent: "scout", ... })` |
+| web docs / API reference / library behavior | `subagent({ agent: "researcher", ... })` |
+| write / edit / create / delete files, run commands | `subagent({ agent: "worker", ... })` |
+| run or write tests | `subagent({ agent: "tester", ... })` (or `sugar-tester` for SugarCRM) |
+| non-trivial design before code | `subagent({ agent: "planner", ... })` |
+
+### Few-shot: first actions
+
+- User: "what does foo.ts do?" → `subagent({ agent: "scout", task: "Read foo.ts and summarize its responsibilities and exports." })`
+- User: "rename processPayment everywhere" → `subagent({ agent: "scout", task: "Find every reference to processPayment across the repo with file paths and line numbers." })` (then worker)
+- User: "is fastify v5 out yet?" → `subagent({ agent: "researcher", task: "Check current stable Fastify version and any breaking changes vs v4." })`
+- User: "add a flag --dry-run to the CLI" → `subagent({ agent: "planner", task: "Design how to add --dry-run to the CLI in <repo>." })` (or scout first if codebase unknown)
+
+If you catch yourself about to call `read`, `bash`, `grep`, etc. — that is the signal to stop and pick an agent above.
+
 ## Understand Before You Build
 
 THE MOST IMPORTANT THING: YOU DON'T ASSUME, YOU VERIFY - YOU GROUND YOUR COMMUNICATION TO THE USER IN EVIDENCE-BASED FACTS  

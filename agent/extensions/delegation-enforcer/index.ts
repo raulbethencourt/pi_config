@@ -32,9 +32,17 @@ export default function (pi: ExtensionAPI) {
 		return {
 			block: true,
 			reason:
-				`Orchestrator cannot use "${toolName}" directly. Delegate via subagent instead.\n\n` +
-				`Available agents: ${AVAILABLE_AGENTS.join(", ")}\n\n` +
-				`Use: subagent({ agent: "<name>", task: "..." }) or subagent({ tasks: [...] }) for parallel execution.`,
+				`STOP. "${toolName}" is BLOCKED for the orchestrator at depth 0. ` +
+				`Delegation must be your FIRST action, not a fallback after a blocked attempt.\n\n` +
+				`Pick an agent now and call subagent({ agent, task }):\n` +
+				`  - scout      → read / grep / find / ls / trace code\n` +
+				`  - researcher → web_search / web_fetch / docs\n` +
+				`  - worker     → write / edit / bash / install / run\n` +
+				`  - tester     → write or run tests\n` +
+				`  - planner    → design non-trivial changes\n` +
+				`  - debugger / security-auditor / codereviewer / doc-writer / refactorer for their specialties\n\n` +
+				`Available agents: ${AVAILABLE_AGENTS.join(", ")}.\n` +
+				`For parallel work: subagent({ tasks: [{ agent, task }, ...] }).`,
 		};
 	});
 
