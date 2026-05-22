@@ -1,6 +1,7 @@
 # Dependencies
 node_modules/
 package-lock.json
+/**/npm/
 
 # Security / credentials
 auth.json
@@ -38,3 +39,4 @@ __pycache__/
 *~
 
 agent/.pi
+agent/settings.json
