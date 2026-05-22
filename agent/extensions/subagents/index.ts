@@ -663,7 +663,7 @@ export default function (pi: ExtensionAPI) {
 		name: "subagent",
 		label: "Subagent",
 		description:
-			"Run a subagent to complete a task. Subagents have NO context from the current conversation — include all necessary context in the task description.",
+			`Run a subagent to complete a task. Subagents have NO context from the current conversation — include all necessary context in the task description.\n\nAvailable agents: ${agents.map((a) => `${a.name} — ${a.description}`).join("; ")}.`,
 		promptSnippet: "Run subagents for delegated tasks",
 		promptGuidelines: [
 			"Parallel tool calls are your primary parallelism mechanism — put multiple independent read/fetch/search calls in one function_calls block. Don't use subagents to parallelize simple I/O.",
@@ -673,13 +673,13 @@ export default function (pi: ExtensionAPI) {
 		],
 		parameters: Type.Object({
 			agent: Type.Optional(
-				Type.String({ description: "Name of the agent to invoke (SINGLE mode)" }),
+				Type.String({ description: `Name of the agent to invoke (SINGLE mode). Available: ${agents.map((a) => a.name).join(", ")}` }),
 			),
 			task: Type.Optional(Type.String({ description: "Task description (SINGLE mode)" })),
 			tasks: Type.Optional(
 				Type.Array(
 					Type.Object({
-						agent: Type.String({ description: "Name of the agent to invoke" }),
+						agent: Type.String({ description: `Name of the agent to invoke. Available: ${agents.map((a) => a.name).join(", ")}` }),
 						task: Type.String({ description: "Task description" }),
 						cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 					}),

@@ -6,8 +6,9 @@ const ALLOWED_TOOLS = new Set([
 ]);
 
 const AVAILABLE_AGENTS = [
-	"scout", "researcher", "planner", "worker", "tester",
-	"debugger", "security-auditor", "doc-writer", "refactorer", "codereviewer",
+	"scout", "researcher", "planner", "worker", "tester", "sugar-tester",
+	"debugger", "security-auditor", "security-auditor-deep", "doc-writer", "refactorer",
+	"codereviewer", "code-reviewer-deep", "critic",
 ];
 
 export default function (pi: ExtensionAPI) {
@@ -40,7 +41,9 @@ export default function (pi: ExtensionAPI) {
 				`  - worker     → write / edit / bash / install / run\n` +
 				`  - tester     → write or run tests\n` +
 				`  - planner    → design non-trivial changes\n` +
-				`  - debugger / security-auditor / codereviewer / doc-writer / refactorer for their specialties\n\n` +
+				`  - critic       → adversarial review of plans before execution\n` +
+				`  - sugar-tester → SugarCRM PHPUnit / bns curl / bns run-batch tests\n` +
+				`  - debugger / security-auditor / security-auditor-deep / codereviewer / code-reviewer-deep / doc-writer / refactorer for their specialties\n\n` +
 				`Available agents: ${AVAILABLE_AGENTS.join(", ")}.\n` +
 				`For parallel work: subagent({ tasks: [{ agent, task }, ...] }).`,
 		};
