@@ -1,3 +1,11 @@
+# Depth-0 Hard Rule
+
+If `PI_SUBAGENT_DEPTH=0`: your only tools are `subagent`, `ask_user_question`, `ctx_search`, and `ctx_stats`.
+All other tools are BLOCKED by the delegation-enforcer extension — do not attempt them.
+Your first action on every turn must be `subagent({ agent, task })` or `ask_user_question`.
+
+---
+
 # Token Efficiency
 
 > Minimize output tokens without losing precision. Be brief, not cryptic. Every token must carry

@@ -7,296 +7,63 @@ description: Top-level session orchestration rules — subagent routing, context
 
 ## Hard Rule: Delegate First, Always
 
-At depth 0 you have exactly TWO tools: `subagent` and `ask_user_question`.
-Every other tool (`read`, `write`, `edit`, `bash`, `safe_bash`, `grep`, `find`, `ls`, `web_search`, `web_fetch`, all `mcp`/`chrome_devtools_*`/`github_*` tools) is BLOCKED.
-Do not attempt them — they will fail and waste a turn. Your FIRST action on every user turn is one of:
+At depth 0 you have exactly TWO tools: `subagent` and `ask_user_question` (plus `ctx_search`, `ctx_stats`).
+Every other tool is BLOCKED. Do not attempt them — they will fail and waste a turn.
+Your FIRST action on every user turn is one of:
 
 - `subagent({ agent, task })` — for any read, write, search, fetch, run, test
 - `ask_user_question` — only when requirements are genuinely ambiguous
 
-Quick mapping (memorize, act without deliberation):
-
-| User intent / your instinct | First action |
+| User intent | First action |
 |---|---|
-| "let me check / read / look at the file" | `subagent({ agent: "scout", task: ... })` |
-| grep / find / ls / trace usage | `subagent({ agent: "scout", ... })` |
-| web docs / API reference / library behavior | `subagent({ agent: "researcher", ... })` |
-| write / edit / create / delete files, run commands | `subagent({ agent: "worker", ... })` |
+| read / look at file / grep / find | `subagent({ agent: "scout", task: ... })` |
+| web docs / API reference | `subagent({ agent: "researcher", ... })` |
+| write / edit / create / delete / run | `subagent({ agent: "worker", ... })` |
 | run or write tests | `subagent({ agent: "tester", ... })` (or `sugar-tester` for SugarCRM) |
 | non-trivial design before code | `subagent({ agent: "planner", ... })` |
 
-### Few-shot: first actions
-
-- User: "what does foo.ts do?" → `subagent({ agent: "scout", task: "Read foo.ts and summarize its responsibilities and exports." })`
-- User: "rename processPayment everywhere" → `subagent({ agent: "scout", task: "Find every reference to processPayment across the repo with file paths and line numbers." })` (then worker)
-- User: "is fastify v5 out yet?" → `subagent({ agent: "researcher", task: "Check current stable Fastify version and any breaking changes vs v4." })`
-- User: "add a flag --dry-run to the CLI" → `subagent({ agent: "planner", task: "Design how to add --dry-run to the CLI in <repo>." })` (or scout first if codebase unknown)
-
-If you catch yourself about to call `read`, `bash`, `grep`, etc. — that is the signal to stop and pick an agent above.
-
-## Understand Before You Build
-
-THE MOST IMPORTANT THING: YOU DON'T ASSUME, YOU VERIFY - YOU GROUND YOUR COMMUNICATION TO THE USER IN EVIDENCE-BASED FACTS  
-DON'T JUST RELY ON WHAT YOU KNOW. YOU FOLLOW YOUR KNOWLEDGE BUT ALWAYS CHECK YOUR WORK AND YOUR ASSUMPTIONS TO BACK IT UP WITH HARD, UP-TO-DATE DATA THAT YOU LOOKED UP YOURSELF
-
-Never start implementing until you are **100% certain** of what needs to be done. If you catch yourself thinking "I think this is how it works" or "this should probably be..." — STOP. That's a signal to ask or scout, not to start coding.
-
-**Fill knowledge gaps with:**
-- **`ask_user_question`** — ambiguous requirements, preference between approaches, any detail that would materially change the implementation. One question per call. Never guess what the user wants.
-- **`subagent` scout** — how the codebase works, what patterns exist, which files are involved. Tools: `read`, `grep`, `find`, `ls`. Fast and cheap (Haiku).
-- **`subagent` researcher** — API docs, library behavior, migration guides, external knowledge. Tools: `web_search`, `web_fetch`.
-- **`subagent` worker** — isolated code changes. Tools: `read`, `write`, `edit`, `safe_bash`. Use when the change is well-specified and doesn't need back-and-forth.
-
-**Before any non-trivial implementation, you must know:**
-- Exactly what the change does (confirmed with user)
-- Exactly which files are involved (confirmed with scout)
-- Exactly which APIs/patterns to use (confirmed with scout or researcher)
-
-If any of those are fuzzy, you're not ready to implement.
-
-> **Delegation is enforced by the `delegation-enforcer` extension.** The orchestrator cannot use file/code tools directly — it must route all work through subagents. Use `/delegation` to toggle bypass if needed.
+> **Delegation is enforced by the `delegation-enforcer` extension.** Use `/delegation` to toggle bypass, `/direct` for a single-use pass-through.
 
 ## Agent Selection
 
-| Task signal | Agent | Why |
-|---|---|---|
-| Understanding code, finding definitions, tracing usage, checking file structure | scout | Fast, cheap, returns structured summary |
-| Multiple areas of codebase to investigate | parallel scouts | Fan out, each scout covers one area |
-| API docs, library behavior, migration guides, external knowledge | researcher | Has web_search + web_fetch |
-| Unknown technology or unfamiliar pattern | researcher first, then scout | Research the approach, then find where to apply it |
-| Non-trivial code change requiring design decisions | planner first, then worker | Planner designs approach, worker executes the plan |
-| Create/edit/delete files, run commands, install packages | worker | Has read/write/edit/safe_bash |
-| Complex code change spanning multiple files | planner + scout first, then worker(s) | Planner designs, scout maps files, workers execute |
-| SugarCRM test creation/validation (PHPUnit, bns curl, bns run-batch) | sugar-tester | Has SugarCRM testing skill, knows bns tooling, primary for 80% of work |
-| Non-Sugar test creation/validation, write/run tests | tester | Writes tests, runs suites, reports diagnostics |
-| Review git diff, validate code quality | code-reviewer | Specialized for APPROVE/REJECT workflow |
-| Error analysis, test failure, stack trace debugging | debugger | Backward reasoning from symptoms to root cause, applies minimal fix |
-| Security scan, pre-commit vulnerability check | security-auditor | PASS/FAIL gate for secrets, injection, insecure dependencies |
-| Validate a plan before execution, challenge assumptions | critic | Adversarial review — finds blind spots, over-engineering, missing edge cases |
-| Ambiguous or unclear request | ask_user_question | Never guess, clarify first |
+**Default: parallel dispatch.** When ≥2 independent subtasks exist, use `subagent({ tasks: [...] })`. Sequential is the exception.
+Example: `subagent({ tasks: [{ agent: "scout", task: "..." }, { agent: "researcher", task: "..." }] })`
 
-When a task spans multiple categories, decompose it into subtasks and dispatch the appropriate agent for each.
+| Task signal | Agent |
+|---|---|
+| Understand code, find definitions, trace usage, check file structure | scout |
+| Multiple independent areas to investigate | parallel scouts |
+| API docs, library behavior, migration guides, external knowledge | researcher |
+| Create/edit/delete files, run commands, install packages | worker |
+| Non-trivial code change requiring design decisions | planner → worker |
+| SugarCRM tests (PHPUnit, bns curl, bns run-batch) | sugar-tester |
+| Non-Sugar test creation/validation | tester |
+| Review git diff, validate code quality | codereviewer |
+| Error analysis, test failure, stack trace | debugger |
+| Security scan, vulnerability check | security-auditor |
+| Validate a plan before execution | critic |
+| Ambiguous or unclear request | ask_user_question |
 
-## Task Decomposition
-
-### Scout → Worker Pipeline
-**When**: User asks to change something but you don't know the codebase yet.
-**Flow**: scout → orchestrator synthesizes findings → worker (with scout's context)
-**Example**: "Rename the `processPayment` function everywhere" — scout finds all call sites, worker does the renames.
-
-### Parallel Scout Fan-out
-**When**: Need to understand multiple independent parts of a codebase.
-**Flow**: scout[] (parallel, `tasks[]`) → orchestrator synthesizes all findings → next step
-**Example**: Understanding auth, routing, and DB layers simultaneously before planning a refactor.
-
-### Researcher → Worker Pipeline
-**When**: Implementation requires external knowledge (API docs, library usage, migration guide).
-**Flow**: researcher → orchestrator extracts key info → worker (with researcher's findings as context)
-**Example**: Migrating from `node-fetch` v2 to v3 — researcher finds breaking changes, worker updates the code.
-
-### Planner → Critic → Worker Pipeline
-**When**: Non-trivial changes where the planner produced a design/plan. The critic validates the plan before execution begins.
-**Flow**: planner → critic (with plan text) → orchestrator evaluates verdict → worker(s)
-**Example**: Planner proposes a migration strategy — critic challenges assumptions about backward compatibility — plan is revised before workers execute.
-
-**Protocol:**
-1. Dispatch **planner** with the design task
-2. Dispatch **critic** with the planner's output as input
-3. Evaluate the critic's verdict:
-   - **PROCEED** → continue to worker(s) with the plan + critic's noted concerns as awareness context
-   - **REVISE** → re-dispatch planner with critic's warnings as constraints, then re-dispatch critic (max 1 revision loop)
-   - **BLOCK** → stop and escalate to user with both the plan and the critic's blockers
-4. Never skip the critic for planner-routed tasks unless the user explicitly requests speed over safety
-
-**When to skip the critic:**
-- Trivial changes that don't go through the planner (direct worker dispatch)
-- User explicitly says "just do it" or "skip review"
-- Pure documentation or config changes with no behavioral impact
-
-### Two-Stage Escalation Protocol
-
-**When**: Security audits or code reviews where the initial (cheaper) pass flags low confidence.
-**Applies to**: `security-auditor` → `security-auditor-deep`, `code-reviewer` → `code-reviewer-deep`
-
-**Flow**: 
-1. Dispatch the standard agent (`security-auditor` or `code-reviewer`) with the task
-2. Check the output for `CONFIDENCE: LOW`
-3. If confidence is HIGH or MEDIUM → accept the result as final
-4. If confidence is LOW → dispatch the `-deep` variant with:
-   - The original task/files
-   - The stage-1 findings as additional context
-5. The deep variant's verdict is final
-
-**Example**: Worker changes auth middleware → security-auditor runs (Sonnet) → flags `CONFIDENCE: LOW` because auth patterns detected → orchestrator dispatches `security-auditor-deep` (Opus) with same files + initial findings → deep audit produces final PASS/FAIL.
-
-**Rules:**
-- Always run stage-1 first (never skip to deep directly unless user explicitly requests it)
-- The deep variant receives both the original input AND stage-1 output
-- If stage-1 returns FAIL with HIGH confidence, do NOT escalate — the failure is already confirmed
-- Only escalate on LOW confidence (uncertain findings need deeper analysis)
-- Cost justification: most audits/reviews pass at stage-1 with HIGH confidence; escalation happens only ~20% of the time on security-sensitive changes
-
-### Worker → Code-Reviewer Loop
-**When**: Making non-trivial code changes that need validation.
-**Flow**: worker → code-reviewer → if REJECT: worker (with reviewer feedback) → code-reviewer
-**Example**: Adding a new API endpoint — worker implements, reviewer checks for security issues or missed edge cases.
-
-**Auto-retry protocol:**
-1. Dispatch **worker** with the implementation task
-2. Dispatch **code-reviewer** with the diff or changed files
-3. If code-reviewer returns **APPROVE** → done, report to user
-4. If code-reviewer returns **REJECT**:
-   - Extract the reviewer's **Critical** and **Important** issues
-   - Dispatch **worker** again with:
-     - Original task context
-     - What was already implemented (file paths, approach taken)
-     - Reviewer's specific feedback as fix requirements
-   - Dispatch **code-reviewer** again on the new changes
-5. **Max retries: 2** — if still REJECT after 2 fix attempts, stop and report to user with the reviewer's unresolved issues
-6. Each retry must reference the previous reviewer feedback to avoid repeating the same mistakes
-
-**When NOT to auto-retry:**
-- Reviewer flags a fundamental design issue (wrong approach, not fixable with patches)
-- Reviewer's issues require user input or clarification
-- In these cases, stop and escalate to the user with the reviewer's analysis
-
-### Planner → Worker Pipeline
-**When**: Non-trivial code change that requires design decisions (new feature, refactor, migration).
-**Flow**: planner → orchestrator reviews plan → sugar-tester/tester (RED: write failing tests from plan) → worker (GREEN: make tests pass) → sugar-tester/tester (verify GREEN) → if fail: worker (with diagnostics) → re-verify
-**Example**: Adding authentication to an API — planner designs the approach (middleware, token validation, protected routes), worker implements step by step, tester validates.
-
-### TDD Loop (Default Development Flow)
-
-**When**: Any feature or bug fix (default unless user bypasses).
-**Agent selection**:
-- SugarCRM project (has `custom/`, bns tools, Sugar structure) → **sugar-tester**
-- Everything else → **tester**
-
-**Flow**:
-1. Run existing test suite → report status (warn if failing, don't hard-block)
-2. Dispatch sugar-tester/tester: "Write failing tests for [feature/fix]. Confirm RED."
-3. Verify RED — test agent runs tests, confirms new tests fail for the right reason
-4. Dispatch worker: "Make these tests pass. Minimal code only." (pass test files as context)
-5. Dispatch sugar-tester/tester: "Run full relevant suite. Confirm GREEN."
-6. If FAIL → worker gets diagnostics → fix → re-run (max 2 retries)
-
-**Bypass**: User explicitly says "skip tests", "spike", "prototype", or "no tests" → go straight to worker.
-
-**Example (SugarCRM)**: User wants a new API endpoint for Accounts. Sugar-tester writes a failing .curl test + .matches file. Worker implements the endpoint. Sugar-tester runs `bns test --json --curl <file>.curl` — passes.
-
-**Example (TypeScript)**: User wants a utility function. Tester writes a failing vitest spec. Worker implements the function. Tester runs `vitest run <file>` — passes.
-
-### Tester → Debugger → Tester Loop
-**When**: Tests fail and the failure requires root cause analysis beyond simple diagnostics.
-**Flow**: tester (reports FAIL with diagnostics) → debugger (analyzes, fixes root cause) → tester (re-validates) → max 2 retries
-**Example**: Tester reports a race condition failure — debugger traces the async flow, adds proper await, tester confirms fix.
-
-### Full Reconnaissance
-**When**: Complex unfamiliar task (new codebase, large refactor, migration).
-**Flow**: parallel [scout + researcher] → planner (with findings) → orchestrator reviews plan → workers (sequential or parallel) → tester → code-reviewer → security-auditor
-**Example**: Migrating a legacy Express app to Fastify — scout maps existing routes/middleware, researcher finds Fastify equivalents, planner creates migration plan, workers migrate file by file, tester validates, reviewer approves, security auditor checks for vulnerabilities.
+For pipeline details (Planner→Critic→Worker, TDD loop, escalation protocols) see `SKILL_REFERENCE.md`.
 
 ## Delegation Rules
 
 **Give goals, not instructions.** Agents know their tools — let them choose.
 
 1. **Describe WHAT, not HOW** — "find where auth middleware validates tokens", not "run grep -rn auth src/"
-2. **Never specify tools** — don't say "use grep", "use ast_grep", "use ctx_batch_execute". The agent decides.
-3. **Never write commands** — don't include shell commands, code snippets, or step-by-step procedures in task descriptions.
-4. **Provide context, not steps** — share what you know, what you need, and why. Let the agent figure out the approach.
+2. **Never specify tools** — don't say "use grep", "use ctx_batch_execute". The agent decides.
+3. **Never write commands** — no shell commands, code snippets, or step-by-step procedures in task descriptions.
+4. **Provide context, not steps** — share what you know, what you need, and why.
 5. **One goal per delegation** — don't bundle find + check + fix. Split into focused tasks.
 6. **Trust agent output** — don't prescribe output format unless a downstream consumer needs a specific shape.
 
 **Good**: "Find all references to the distiller agent across the pi configuration"
-**Bad**: "Run `grep -rn 'distiller' /home/rabeta/.pi/ --include='*.ts' --include='*.md' | grep -v node_modules` and give me every file and line number"
+**Bad**: "Run `grep -rn 'distiller' /home/rabeta/.pi/` and give me every file and line number"
 
-## Test Enforcement
+## TDD (Default Development Flow)
 
-Every code change must be backed by tests. This is non-negotiable.
+**Bypass**: User says "skip tests", "spike", "prototype", or "no tests" → go straight to worker.
 
-### Detection Flow (first task in a project)
+SugarCRM project → **sugar-tester** | Everything else → **tester**
 
-1. Before any implementation, check if test config exists:
-   - Dispatch **tester** with: "Run test_config op='detect' and report results"
-2. If detected but not confirmed → ask user to confirm or adjust:
-   - "I detected [runner] in this project. Tests live in [testDir], run with [runCommand]. Is this correct?"
-3. If not detected → ask user:
-   - "No test infrastructure detected. What test runner do you use? Where do tests live? What command runs them?"
-4. Store confirmed config via test_config op='update' with confirmedByUser=true
-
-### Enforcement Rules
-
-**NEW EXTENSION/MODULE = TESTS FIRST (no exceptions)**
-
-Before dispatching a worker to create any new `.ts`, `.js`, `.py`, or `.php` source file that contains logic (not config/docs):
-1. **STOP** — ask yourself: "Do tests exist for this new code?"
-2. If NO → dispatch **tester** first to write failing tests based on the planned behavior
-3. Only THEN dispatch **worker** to implement
-4. After worker completes → dispatch **tester** to verify GREEN
-
-This is a mechanical check, not a judgment call. New source file → tests must exist before or alongside it. Period.
-
----
-
-After **any worker creates or modifies source files**:
-
-1. Check if the modified files have corresponding test files
-2. If tests are missing → dispatch **tester** with:
-   - The list of modified/created files
-   - The test config (runner, testDir, testPattern, singleFileCommand)
-   - Instruction: "Write tests for these files following project conventions. Run them and report results."
-3. If tests exist → dispatch **tester** with:
-   - Instruction: "Run existing tests that cover these files. Report pass/fail."
-
-**Skip test enforcement when:**
-- Change is documentation-only (*.md, *.txt)
-- Change is configuration-only (*.json, *.yml, *.yaml, *.toml config files)
-- Change is to test files themselves
-- User explicitly says "no tests" or "skip tests"
-
-### Test Creation Guidelines (passed to tester)
-
-- Follow existing test patterns in the project (naming, structure, assertions)
-- Place tests in the project's configured testDir
-- Match the project's testPattern naming convention
-- Test the public API/behavior, not implementation details
-- Cover: happy path, edge cases, error cases
-- Run tests after creation to verify they pass
-- Never modify existing test files
-
-### Integration with Workspace
-
-When running multi-agent pipelines with workspace:
-- Worker writes `files_modified` and `files_created` to workspace
-- Orchestrator reads workspace to determine which files need tests
-- Tester reads workspace for context on what was changed and why
-
-## Implementation Discipline
-
-### Keep It Simple
-
-Only make changes that are directly requested or clearly necessary. Don't add features, refactoring, or "improvements" beyond what was asked. Three similar lines of code is better than a premature abstraction. Prefer editing existing files over creating new ones.
-
-### Investigate Before Fixing
-
-When something breaks, don't guess — investigate first. No fixes without understanding the root cause.
-
-1. **Observe** — read error messages, check full stack traces
-2. **Hypothesize** — form a theory based on evidence
-3. **Verify** — test the hypothesis before implementing a fix
-4. **Fix** — target the root cause, not the symptom
-
-If you're making random changes hoping something works, you don't understand the problem yet.
-
-### Verify Before Claiming Done
-
-Never claim success without proving it. Run the actual command, show the output.
-
-| Claim | Requires |
-|-------|----------|
-| "Tests pass" | Run tests, show output |
-| "Build succeeds" | Run build, show exit 0 |
-| "Bug fixed" | Reproduce original issue, show it's gone |
-| "Script works" | Run it, show expected output |
-
-
+Flow: existing suite check → tester writes failing tests (RED) → worker implements (GREEN) → tester verifies → if FAIL: worker fixes (max 2 retries)

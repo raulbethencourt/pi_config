@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 // Only these tools are allowed for the orchestrator — everything else is blocked
 const ALLOWED_TOOLS = new Set([
 	"subagent", "ask_user_question",
+	"ctx_search", "ctx_stats", // read-only KB ops; no isolation needed
 ]);
 
 const AVAILABLE_AGENTS = [
@@ -17,12 +18,18 @@ export default function (pi: ExtensionAPI) {
 	if (depth > 0) return;
 
 	let bypassed = false;
+	let directBypass = false;
 
 	// Register tool_call hook to block direct tool use by the orchestrator
 	pi.on("tool_call", async (event) => {
 		if (bypassed) return undefined;
 
 		const toolName = event.toolName;
+
+		if (directBypass && !ALLOWED_TOOLS.has(toolName)) {
+			directBypass = false; // single-use: consume immediately
+			return undefined;     // let this one call through
+		}
 
 		// Only allow explicitly allowed tools — block everything else
 		if (ALLOWED_TOOLS.has(toolName)) {
@@ -33,21 +40,12 @@ export default function (pi: ExtensionAPI) {
 		return {
 			block: true,
 			reason:
-				`STOP. "${toolName}" is BLOCKED for the orchestrator at depth 0. ` +
-				`Delegation must be your FIRST action, not a fallback after a blocked attempt.\n\n` +
-				`Pick an agent now and call subagent({ agent, task }):\n` +
-				`  - scout      → read / grep / find / ls / trace code\n` +
-				`  - researcher → web_search / web_fetch / docs\n` +
-				`  - worker     → write / edit / bash / install / run\n` +
-				`  - tester     → write or run tests\n` +
-				`  - planner    → design non-trivial changes\n` +
-				`  - critic       → adversarial review of plans before execution\n` +
-				`  - sugar-tester → SugarCRM PHPUnit / bns curl / bns run-batch tests\n` +
-				`  - debugger / security-auditor / security-auditor-deep / codereviewer / code-reviewer-deep / doc-writer / refactorer for their specialties\n\n` +
-				`Available agents: ${AVAILABLE_AGENTS.join(", ")}.\n` +
-				`For parallel work: subagent({ tasks: [{ agent, task }, ...] }).`,
+				`STOP. "${toolName}" is blocked at depth 0. Delegate via subagent({ agent, task }).\n` +
+				`Agents: scout | researcher | worker | tester | planner | critic | sugar-tester | debugger | codereviewer | doc-writer | refactorer\n` +
+				`Parallel: subagent({ tasks: [{ agent, task }, ...] })`,
 		};
 	});
+
 
 	// TDD enforcement warning: log when new extension/source files are created without tests
 	// This is a soft gate — it warns but doesn't block. The orchestrator skill enforces the hard rule.
@@ -85,6 +83,17 @@ export default function (pi: ExtensionAPI) {
 					"success",
 				);
 			}
+		},
+	});
+
+	pi.registerCommand("direct", {
+		description: "Allow ONE blocked tool call through (single-use bypass, then enforcement re-activates)",
+		handler: async (_args, ctx) => {
+			directBypass = true;
+			ctx.ui.notify(
+				"⚡ Direct mode: next blocked tool call will pass through once, then enforcement re-activates.",
+				"warning",
+			);
 		},
 	});
 }
