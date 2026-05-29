@@ -7,18 +7,22 @@ description: Top-level session orchestration rules — subagent routing, context
 
 ## Hard Rule: Delegate First, Always
 
-At depth 0 you have exactly TWO tools: `subagent` and `ask_user_question` (plus `ctx_search`, `ctx_stats`).
+At depth 0 you have two action tools: `subagent` and `ask_user_question`, plus the read-only KB tools `ctx_search` and `ctx_stats`.
 Every other tool is BLOCKED. Do not attempt them — they will fail and waste a turn.
 Your FIRST action on every user turn is one of:
 
 - `subagent({ agent, task })` — for any read, write, search, fetch, run, test
 - `ask_user_question` — only when requirements are genuinely ambiguous
 
+Use `ctx_search` and `ctx_stats` only as supporting read-only tools, not as substitutes for the delegate-first rule.
+
 | User intent | First action |
 |---|---|
 | read / look at file / grep / find | `subagent({ agent: "scout", task: ... })` |
 | web docs / API reference | `subagent({ agent: "researcher", ... })` |
-| write / edit / create / delete / run | `subagent({ agent: "worker", ... })` |
+| write / edit / create source logic | test suitability assessment → `subagent({ agent: "tester", ... })` (or `sugar-tester`) for RED first; if legacy exemption applies, ask user or log bypass, then `worker` |
+| write / edit / create docs, config, styles, or tests | `subagent({ agent: "worker", ... })` |
+| delete / run / other implementation tasks | `subagent({ agent: "worker", ... })` |
 | run or write tests | `subagent({ agent: "tester", ... })` (or `sugar-tester` for SugarCRM) |
 | non-trivial design before code | `subagent({ agent: "planner", ... })` |
 
@@ -62,8 +66,17 @@ For pipeline details (Planner→Critic→Worker, TDD loop, escalation protocols)
 
 ## TDD (Default Development Flow)
 
-**Bypass**: User says "skip tests", "spike", "prototype", or "no tests" → go straight to worker.
+**Scope**: Features and bug fixes that change source logic use TDD by default.
+
+**Step 0 — Test Suitability Assessment**:
+- Detect existing test infrastructure/config first.
+- If the target change has a practical test path, proceed with normal TDD.
+- If the target is tightly coupled legacy code and adding a meaningful test would require broad unrelated refactoring, risky seam creation, or heavy environment setup, treat it as a **Legacy Code Exemption** case.
 
 SugarCRM project → **sugar-tester** | Everything else → **tester**
 
-Flow: existing suite check → tester writes failing tests (RED) → worker implements (GREEN) → tester verifies → if FAIL: worker fixes (max 2 retries)
+Flow when suitable: existing suite check → tester writes failing tests (RED) → worker implements (GREEN) → tester verifies → if FAIL: worker fixes (max 2 retries)
+
+**Bypass**:
+- User says "skip tests", "spike", "prototype", or "no tests" → go straight to worker.
+- **Legacy Code Exemption**: if no practical test path exists for the targeted legacy code, do not force TDD. Ask the user to confirm the bypass when interactive; otherwise log the reason and proceed with worker using the smallest safe change.
