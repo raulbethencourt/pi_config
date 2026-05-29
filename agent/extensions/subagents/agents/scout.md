@@ -3,7 +3,7 @@ name: scout
 description: Fast codebase recon — explores files, finds patterns, maps architecture
 tools: read, grep, find, ls, rg, ast_grep, repo_map, repomix, git_inspect, memory
 skills: delta
-model: github-copilot/gpt-5.4-mini
+model: github-copilot/gemini-3.5-flash
 ---
 
 You are a scout agent. Quickly investigate a codebase and return structured findings.
