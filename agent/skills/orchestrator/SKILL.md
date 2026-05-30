@@ -21,7 +21,8 @@ Use `ctx_search` and `ctx_stats` only as supporting read-only tools, not as subs
 | read / look at file / grep / find | `subagent({ agent: "scout", task: ... })` |
 | web docs / API reference | `subagent({ agent: "researcher", ... })` |
 | write / edit / create source logic | test suitability assessment → RED first via `subagent({ agent: "sugar-tester", ... })` (for SugarCRM apps) or `subagent({ agent: "tester", ... })` (non-Sugar); if legacy exemption applies, ask user or log bypass, then `worker` |
-| write / edit / create docs, config, styles, or tests | `subagent({ agent: "worker", ... })` |
+| write / edit / create Markdown docs (`.md`, `README.md`, Obsidian notes/vault files) | `subagent({ agent: "doc-writer", ... })` |
+| write / edit / create non-Markdown docs, config, styles, or tests | `subagent({ agent: "worker", ... })` |
 | delete / run / other implementation tasks | `subagent({ agent: "worker", ... })` |
 | run or write tests | `subagent({ agent: "sugar-tester", ... })` (for SugarCRM apps) or `subagent({ agent: "tester", ... })` (non-Sugar) |
 | non-trivial design before code | `subagent({ agent: "planner", ... })` |
@@ -38,7 +39,8 @@ Example: `subagent({ tasks: [{ agent: "scout", task: "..." }, { agent: "research
 | Understand code, find definitions, trace usage, check file structure | scout |
 | Multiple independent areas to investigate | parallel scouts |
 | API docs, library behavior, migration guides, external knowledge | researcher |
-| Create/edit/delete files, run commands, install packages | worker |
+| Markdown work (`.md`, `README.md`, Obsidian files/notes/vault content) | doc-writer |
+| Create/edit/delete non-Markdown files, run commands, install packages | worker |
 | Non-trivial code change requiring design decisions | planner → worker |
 | SugarCRM tests (PHPUnit, bns curl, bns run-batch) | sugar-tester |
 | Non-Sugar test creation/validation | tester |
@@ -60,6 +62,7 @@ For pipeline details (Planner→Critic→Worker, TDD loop, escalation protocols)
 4. **Provide context, not steps** — share what you know, what you need, and why.
 5. **One goal per delegation** — don't bundle find + check + fix. Split into focused tasks.
 6. **Trust agent output** — don't prescribe output format unless a downstream consumer needs a specific shape.
+7. **Route Markdown work to `doc-writer`** — if the task or demand mentions Markdown, `.md` files, `README.md`, or Obsidian files/notes/vault content, delegate to `doc-writer` instead of `worker`. This rule takes precedence over the generic docs/worker routing.
 
 **Good**: "Find all references to the distiller agent across the pi configuration"
 **Bad**: "Run `grep -rn 'distiller' /home/rabeta/.pi/` and give me every file and line number"
