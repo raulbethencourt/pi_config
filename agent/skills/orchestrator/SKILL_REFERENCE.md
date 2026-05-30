@@ -103,7 +103,7 @@ If any of those are fuzzy, you're not ready to implement.
 
 ### Planner → Worker Pipeline
 **When**: Non-trivial code change that requires design decisions.
-**Flow**: planner → orchestrator reviews plan → test suitability assessment → tester (RED: write failing tests) if suitable, otherwise explicit legacy bypass → worker (GREEN: make tests pass, or smallest safe change under bypass) → tester (verify GREEN when tests exist)
+**Flow**: planner → orchestrator reviews plan → test suitability assessment → sugar-tester (for SugarCRM) or tester (non-Sugar) for RED first if suitable, otherwise explicit legacy bypass → worker (GREEN: make tests pass, or smallest safe change under bypass) → sugar-tester (for SugarCRM) or tester (non-Sugar) to verify GREEN when tests exist
 
 ### TDD Loop (Default Development Flow)
 
@@ -121,23 +121,23 @@ If any of those are fuzzy, you're not ready to implement.
 
 **Flow when suitable**:
 1. Run existing test suite → report status
-2. Dispatch sugar-tester/tester: "Write failing tests for [feature/fix]. Confirm RED."
-3. Verify RED — test agent runs tests, confirms new tests fail for the right reason
+2. Dispatch **sugar-tester** (for SugarCRM) or **tester** (non-Sugar): "Write failing tests for [feature/fix]. Confirm RED."
+3. Verify RED — the selected test agent runs tests and confirms the new tests fail for the right reason
 4. Dispatch worker: "Make these tests pass. Minimal code only."
-5. Dispatch sugar-tester/tester: "Run full relevant suite. Confirm GREEN."
+5. Dispatch **sugar-tester** (for SugarCRM) or **tester** (non-Sugar): "Run full relevant suite. Confirm GREEN."
 6. If FAIL → worker gets diagnostics → fix → re-run (max 2 retries)
 
 **Bypass**:
 - User explicitly says "skip tests", "spike", "prototype", or "no tests" → go straight to worker.
 - **Legacy Code Exemption**: if Step 0 shows no practical test path, do not force TDD; document the reason and proceed with worker.
 
-### Tester → Debugger → Tester Loop
+### Sugar-Tester/Tester → Debugger → Sugar-Tester/Tester Loop
 **When**: Tests fail and the failure requires root cause analysis beyond simple diagnostics.
-**Flow**: tester (reports FAIL with diagnostics) → debugger (analyzes, fixes root cause) → tester (re-validates) → max 2 retries
+**Flow**: sugar-tester (for SugarCRM) or tester (non-Sugar) reports FAIL with diagnostics → debugger (analyzes, fixes root cause) → sugar-tester (for SugarCRM) or tester (non-Sugar) re-validates → max 2 retries
 
 ### Full Reconnaissance
 **When**: Complex unfamiliar task (new codebase, large refactor, migration).
-**Flow**: parallel [scout + researcher] → planner (with findings) → orchestrator reviews plan → workers (sequential or parallel) → tester → codereviewer → security-auditor
+**Flow**: parallel [scout + researcher] → planner (with findings) → orchestrator reviews plan → workers (sequential or parallel) → sugar-tester (for SugarCRM) or tester (non-Sugar) → codereviewer → security-auditor
 
 ## Test Enforcement
 
@@ -145,7 +145,7 @@ Every code change that has a practical test path must be backed by tests. **Lega
 
 ### Detection Flow (first task in a project)
 
-1. Before any implementation, check if test config exists by dispatching **tester** with: "Run test_config op='detect' and report results"
+1. Before any implementation, check if test config exists by dispatching **sugar-tester** (for SugarCRM) or **tester** (non-Sugar) with: "Run test_config op='detect' and report results"
 2. If detected but not confirmed → ask user to confirm or adjust
 3. If not detected → run a Test Suitability Assessment for the requested change
 4. If the change is test-suitable but config is missing → ask user about test runner, test dir, run command
@@ -159,14 +159,14 @@ Every code change that has a practical test path must be backed by tests. **Lega
 Before dispatching a worker to create any new `.ts`, `.js`, `.py`, or `.php` source file that contains logic:
 1. **STOP** — ask yourself: "Do tests exist for this new code?"
 2. Run a Test Suitability Assessment
-3. If the change is test-suitable and tests do not exist → dispatch **tester** first to write failing tests based on the planned behavior
+3. If the change is test-suitable and tests do not exist → dispatch **sugar-tester** (for SugarCRM) or **tester** (non-Sugar) first to write failing tests based on the planned behavior
 4. Only THEN dispatch **worker** to implement
-5. After worker completes → dispatch **tester** to verify GREEN
+5. After worker completes → dispatch **sugar-tester** (for SugarCRM) or **tester** (non-Sugar) to verify GREEN
 
 After **any worker creates or modifies source files**:
 1. Check if the modified files have corresponding test files or existing coverage
-2. If tests are missing and the change is test-suitable → dispatch **tester** with the list of modified/created files + test config
-3. If tests exist → dispatch **tester**: "Run existing tests that cover these files. Report pass/fail."
+2. If tests are missing and the change is test-suitable → dispatch **sugar-tester** (for SugarCRM) or **tester** (non-Sugar) with the list of modified/created files + test config
+3. If tests exist → dispatch **sugar-tester** (for SugarCRM) or **tester** (non-Sugar): "Run existing tests that cover these files. Report pass/fail."
 4. If the change qualifies for **Legacy Code Exemption** → document the reason; do not force synthetic tests that require unrelated refactors
 
 **Skip test enforcement when:**
@@ -176,7 +176,7 @@ After **any worker creates or modifies source files**:
 - User explicitly says "no tests" or "skip tests"
 - Change has an explicit **Legacy Code Exemption**
 
-### Test Creation Guidelines (passed to tester)
+### Test Creation Guidelines (passed to sugar-tester for SugarCRM or tester for non-Sugar)
 
 - Follow existing test patterns in the project
 - Cover: happy path, edge cases, error cases

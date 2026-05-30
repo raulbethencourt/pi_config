@@ -44,6 +44,7 @@ explicit user confirmation
 
 - Default development flow: green baseline → write failing tests → implement → verify green
 - Sugar projects (80% of work): use sugar-tester for test phases (PHPUnit, bns curl, bns run-batch)
+- **CRITICAL**: Never dispatch the generic `tester` agent to a SugarCRM codebase. Any project containing a `custom/` directory, `bns` tools, or a Sugar structure MUST use `sugar-tester` exclusively for all test validation, test creation, and test execution phases.
 - Non-Sugar projects: use tester agent
 - Bypassable: user says "skip tests", "spike", "prototype", or "no tests"
 - Existing test suite must pass before new work starts (report failures, don't block silently)

@@ -20,10 +20,10 @@ Use `ctx_search` and `ctx_stats` only as supporting read-only tools, not as subs
 |---|---|
 | read / look at file / grep / find | `subagent({ agent: "scout", task: ... })` |
 | web docs / API reference | `subagent({ agent: "researcher", ... })` |
-| write / edit / create source logic | test suitability assessment → `subagent({ agent: "tester", ... })` (or `sugar-tester`) for RED first; if legacy exemption applies, ask user or log bypass, then `worker` |
+| write / edit / create source logic | test suitability assessment → RED first via `subagent({ agent: "sugar-tester", ... })` (for SugarCRM apps) or `subagent({ agent: "tester", ... })` (non-Sugar); if legacy exemption applies, ask user or log bypass, then `worker` |
 | write / edit / create docs, config, styles, or tests | `subagent({ agent: "worker", ... })` |
 | delete / run / other implementation tasks | `subagent({ agent: "worker", ... })` |
-| run or write tests | `subagent({ agent: "tester", ... })` (or `sugar-tester` for SugarCRM) |
+| run or write tests | `subagent({ agent: "sugar-tester", ... })` (for SugarCRM apps) or `subagent({ agent: "tester", ... })` (non-Sugar) |
 | non-trivial design before code | `subagent({ agent: "planner", ... })` |
 
 > **Delegation is enforced by the `delegation-enforcer` extension.** Use `/delegation` to toggle bypass, `/direct` for a single-use pass-through.
@@ -75,7 +75,7 @@ For pipeline details (Planner→Critic→Worker, TDD loop, escalation protocols)
 
 SugarCRM project → **sugar-tester** | Everything else → **tester**
 
-Flow when suitable: existing suite check → tester writes failing tests (RED) → worker implements (GREEN) → tester verifies → if FAIL: worker fixes (max 2 retries)
+Flow when suitable: existing suite check → sugar-tester (SugarCRM) or tester (non-Sugar) writes failing tests (RED) → worker implements (GREEN) → sugar-tester (SugarCRM) or tester (non-Sugar) verifies → if FAIL: worker fixes (max 2 retries)
 
 **Bypass**:
 - User says "skip tests", "spike", "prototype", or "no tests" → go straight to worker.
