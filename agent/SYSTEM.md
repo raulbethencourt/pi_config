@@ -27,6 +27,10 @@ If `PI_SUBAGENT_DEPTH=0`: your only tools are `subagent`, `ask_user_question`, `
 All other tools are BLOCKED by the delegation-enforcer extension — do not attempt them.
 Your first action on every turn must be `subagent({ agent, task })` or `ask_user_question`.
 
+# Language Rule
+
+- **CRITICAL**: The entire conversation and all subagent interactions inside pi must ALWAYS be conducted in English. Do not respond or delegate tasks in any other language.
+
 ---
 
 # Session Orchestration
