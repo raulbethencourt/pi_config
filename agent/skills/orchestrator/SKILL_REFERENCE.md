@@ -109,7 +109,8 @@ If any of those are fuzzy, you're not ready to implement.
 
 **When**: Any feature or bug fix that changes source logic (default unless user bypasses or legacy exemption applies).
 **Agent selection**:
-- SugarCRM project (has `custom/`, bns tools, Sugar structure) → **sugar-tester**
+- SugarCRM/SuiteCRM project (`sugar_version.php` exists at the project root; fallback signal: `bns` tools) → **sugar-tester**
+- Do not classify a project as Sugar from `custom/` alone.
 - Everything else → **tester**
 
 **Step 0 — Test Suitability Assessment**:
@@ -145,12 +146,13 @@ Every code change that has a practical test path must be backed by tests. **Lega
 
 ### Detection Flow (first task in a project)
 
-1. Before any implementation, check if test config exists by dispatching **sugar-tester** (for SugarCRM) or **tester** (non-Sugar) with: "Run test_config op='detect' and report results"
-2. If detected but not confirmed → ask user to confirm or adjust
-3. If not detected → run a Test Suitability Assessment for the requested change
-4. If the change is test-suitable but config is missing → ask user about test runner, test dir, run command
-5. If the change is not practically testable because the target is tightly coupled legacy code → record a **Legacy Code Exemption** reason and proceed with the smallest safe change
-6. Store confirmed config via test_config op='update' with confirmedByUser=true
+1. Detect project type first: if `sugar_version.php` exists at the project root, treat the project as SugarCRM/SuiteCRM; if `sugar_version.php` is absent but `bns` tools are present, use `bns` as a fallback Sugar signal; do not use `custom/` alone.
+2. Before any implementation, check if test config exists by dispatching **sugar-tester** (for SugarCRM) or **tester** (non-Sugar) with: "Run test_config op='detect' and report results"
+3. If detected but not confirmed → ask user to confirm or adjust
+4. If not detected → run a Test Suitability Assessment for the requested change
+5. If the change is test-suitable but config is missing → ask user about test runner, test dir, run command
+6. If the change is not practically testable because the target is tightly coupled legacy code → record a **Legacy Code Exemption** reason and proceed with the smallest safe change
+7. Store confirmed config via test_config op='update' with confirmedByUser=true
 
 ### Enforcement Rules
 

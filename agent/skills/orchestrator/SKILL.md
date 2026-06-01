@@ -82,6 +82,8 @@ For pipeline details (Planner→Critic→Worker, TDD loop, escalation protocols)
 
 SugarCRM project → **sugar-tester** | Everything else → **tester**
 
+Detection rule: classify a project as SugarCRM/SuiteCRM when `sugar_version.php` exists at the project root. If `sugar_version.php` is absent but `bns` tools are present, treat `bns` as a fallback Sugar signal. Do not use `custom/` alone to decide.
+
 Flow when suitable: existing suite check → sugar-tester (SugarCRM) or tester (non-Sugar) writes failing tests (RED) → worker implements (GREEN) → sugar-tester (SugarCRM) or tester (non-Sugar) verifies → if FAIL: worker fixes (max 2 retries)
 
 **Bypass**:
