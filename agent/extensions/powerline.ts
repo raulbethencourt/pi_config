@@ -26,7 +26,7 @@ type UiTheme = ExtensionContext["ui"]["theme"];
 // ── Icons (nerd-font vs ascii) ─────────────────────────────────────────────────
 const NERD = process.env["STARSHIP_NERD"] === "1";
 const BRANCH_ICON = NERD ? " " : "⎇ ";
-export const AGENTS_ICON = "🤖 ";
+export const AGENTS_ICON = "󰭆 ";
 const PROMPT = "❯";
 const SEPARATOR = "  "; // between status segments
 
