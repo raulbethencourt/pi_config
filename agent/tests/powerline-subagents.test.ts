@@ -35,13 +35,13 @@ describe("powerline subagent segment", () => {
 
 		const line = buildStatusLine(ctx as any, pi as any, { branch: "", staged: 0, modified: 0, untracked: 0 }, true, 0, 120, theme as any);
 
-		expect(line).toContain("🤖 2 agents");
+		expect(line).toContain("󰭆 2 agents");
 	});
 
 	it("hides the subagent count when there are no active subagents", () => {
 		const line = buildStatusLine(ctx as any, pi as any, { branch: "", staged: 0, modified: 0, untracked: 0 }, false, 0, 120, theme as any);
 
-		expect(line).not.toContain("🤖");
+		expect(line).not.toContain("󰭆");
 		expect(line).not.toContain("agents");
 	});
 });
