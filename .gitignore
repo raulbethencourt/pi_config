@@ -40,3 +40,5 @@ __pycache__/
 
 agent/.pi
 agent/settings.json
+agent/docs/
+runs/
