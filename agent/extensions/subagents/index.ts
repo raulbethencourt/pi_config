@@ -18,6 +18,7 @@ import { resolveModel, resolveFallbackModel, loadRoutingConfig, type ComplexityT
 import { decrementActiveSubagentCount, incrementActiveSubagentCount } from "./activity.ts";
 import { hasRateLimitSignal, spawnPiProcess } from "./runner.ts";
 import { initTelemetryDb, logRun, logToolCalls } from "./telemetry.ts";
+import { closeTranscript, dim, displayTranscriptPath, openTranscript, writeOutput, writeToolEvent } from "./transcript.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -59,6 +60,7 @@ export interface AgentResult {
 	progress: AgentProgress;
 	model?: string;
 	usedFallback?: boolean;
+	transcriptPath?: string;
 	usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number };
 }
 
@@ -275,7 +277,7 @@ async function buildPiArgs(
 	agent: AgentConfig,
 	task: string,
 	cwd: string,
-): Promise<{ piArgs: string[]; tempDir: string; tier: string; usedFallback: boolean }> {
+): Promise<{ piArgs: string[]; tempDir: string; tier: string; usedFallback: boolean; routedModel: string }> {
 	const piBin = resolvePiBinary();
 	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sub-"));
 
@@ -355,7 +357,7 @@ async function buildPiArgs(
 		args.push(`Task: ${task}`);
 	}
 
-	return { piArgs: [piBin.command, ...args], tempDir, usedFallback, tier: complexityTier };
+	return { piArgs: [piBin.command, ...args], tempDir, usedFallback, tier: complexityTier, routedModel };
 }
 
 // Re-export for backward compatibility (tests import from here)
@@ -378,7 +380,7 @@ async function runSubagent(
 	signal: AbortSignal | undefined,
 	onUpdate?: (progress: AgentProgress) => void,
 ): Promise<AgentResult> {
-	const { piArgs, tempDir, usedFallback: initialUsedFallback, tier } = await buildPiArgs(agent, task, cwd);
+	const { piArgs, tempDir, usedFallback: initialUsedFallback, tier, routedModel } = await buildPiArgs(agent, task, cwd);
 	const command = piArgs[0];
 	const spawnArgs = piArgs.slice(1);
 
@@ -387,7 +389,7 @@ async function runSubagent(
 		task,
 		output: "",
 		exitCode: 0,
-		model: agent.model,
+		model: routedModel,
 		usedFallback: initialUsedFallback,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 		progress: {
@@ -402,13 +404,30 @@ async function runSubagent(
 		},
 	};
 
+	const transcript = openTranscript(agent.name, task, routedModel);
+	result.transcriptPath = transcript.logPath;
+
 	incrementActiveSubagentCount();
 	const startTime = Date.now();
 	const progress = result.progress;
-	const fireUpdate = throttle(() => {
+	let transcriptToolCount = 0;
+	const flushTranscriptTools = () => {
+		const completedToolCount = progress.currentTool ? Math.max(progress.toolCount - 1, 0) : progress.toolCount;
+		const newToolCount = completedToolCount - transcriptToolCount;
+		if (newToolCount <= 0 || progress.recentTools.length === 0) return;
+		for (const tool of progress.recentTools.slice(-newToolCount)) {
+			writeToolEvent(transcript, tool.tool, tool.args);
+		}
+		transcriptToolCount = completedToolCount;
+	};
+	const emitUpdate = throttle(() => {
 		progress.durationMs = Date.now() - startTime;
 		onUpdate?.(progress);
 	}, 150);
+	const fireUpdate = () => {
+		flushTranscriptTools();
+		emitUpdate();
+	};
 
 	try {
 		const { exitCode, stderrBuf } = await spawnPiProcess({
@@ -480,6 +499,11 @@ async function runSubagent(
 			result.output += "\n\n[Output truncated]";
 		}
 	}
+
+	flushTranscriptTools();
+	writeOutput(transcript, result.output || "(no output)");
+	closeTranscript(transcript, progress.status, progress.tokens, progress.durationMs, result.usage.cost);
+	console.error(dim(`📄 Transcript: ${displayTranscriptPath(transcript.logPath)}`));
 
 	return result;
 }
