@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme, parseFrontmatter, truncateHead, withFileMutationQueue, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@mariozechner/pi-coding-agent";
-import { Container, Markdown, Spacer, Text, visibleWidth } from "@mariozechner/pi-tui";
+import { Container, Markdown, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import * as formatUtils from "../shared/format.ts";
 import { extractTextContent } from "../shared/content.ts";
@@ -236,28 +236,35 @@ export function formatToolPreview(name: string, args: Record<string, unknown>): 
 }
 
 export function truncLine(text: string, maxWidth: number): string {
+	if (maxWidth <= 0) return "";
 	if (visibleWidth(text) <= maxWidth) return text;
-	// Simple truncation - strip to fit
+	if (text.includes("\x1b")) {
+		return truncateToWidth(text, maxWidth);
+	}
+
 	let result = "";
 	let width = 0;
-	for (let i = 0; i < text.length; i++) {
-		const ch = text[i];
-		// Skip ANSI escape sequences
-		if (ch === "\x1b") {
-			const match = text.slice(i).match(/^\x1b\[[0-9;]*m/);
-			if (match) {
-				result += match[0];
-				i += match[0].length - 1;
-				continue;
-			}
-		}
-		if (width >= maxWidth - 1) {
+	for (const ch of text) {
+		const chWidth = visibleWidth(ch);
+		if (width + chWidth > maxWidth - 1) {
 			return result + "…";
 		}
 		result += ch;
-		width++;
+		width += chWidth;
 	}
 	return result;
+}
+
+function normalizeInlinePreview(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
+}
+
+function fitInlinePreview(text: string, maxWidth: number): string {
+	return truncLine(normalizeInlinePreview(text), Math.max(1, maxWidth));
+}
+
+function addTreeLine(container: Container, prefix: string, content: string, maxWidth: number): void {
+	container.addChild(new Text(truncLine(`${prefix}${content}`, maxWidth), 0, 0));
 }
 
 // ── Subagent Execution ────────────────────────────────────────────────
@@ -536,6 +543,7 @@ function renderAgentProgress(
 	theme: Theme,
 	expanded: boolean,
 	w: number,
+	isLast: boolean,
 ): Container {
 	const c = new Container();
 	const prog = r.progress;
@@ -543,6 +551,9 @@ function renderAgentProgress(
 	const isPending = prog.status === "pending";
 	const isFailed = prog.status === "failed" || r.exitCode !== 0;
 	const isDone = prog.status === "completed" && r.exitCode === 0;
+	const headPrefix = isLast ? "└─ " : "├─ ";
+	const bodyPrefix = isLast ? "   " : "│  ";
+	const bodyWidth = Math.max(1, w - visibleWidth(bodyPrefix));
 
 	// ── Status icon ──
 	const icon = isRunning
@@ -557,7 +568,6 @@ function renderAgentProgress(
 	const barWidth = 12;
 	let progressBar = "";
 	if (isRunning || isDone || isFailed) {
-		// Estimate progress based on tool count (cap at 95% while running)
 		const toolProgress = Math.min(prog.toolCount / Math.max(prog.toolCount + 2, 5), 0.95);
 		const pct = isDone ? 1 : toolProgress;
 		const filled = Math.round(pct * barWidth);
@@ -576,64 +586,60 @@ function renderAgentProgress(
 	stats.push(formatUtils.formatDuration(prog.durationMs));
 	const statsStr = theme.fg("dim", stats.join(" · "));
 
-	// ── Line 1: icon + bar + agent name + model + stats ──
 	const modelShort = r.model ? r.model.split("/").pop() || "" : "";
 	const line1 = `${icon} ${progressBar} ${theme.fg("toolTitle", theme.bold(r.agent))} ${theme.fg("dim", modelShort)} ${statsStr}`;
-	c.addChild(new Text(truncLine(line1, w), 0, 0));
+	addTreeLine(c, headPrefix, line1, w);
 
-	// ── Line 2: current action or result summary ──
 	if (isRunning && prog.currentTool) {
-		const toolLine = prog.currentToolArgs
-			? `${prog.currentTool}: ${prog.currentToolArgs}`
-			: prog.currentTool;
-		c.addChild(new Text(truncLine(`  ${theme.fg("warning", "▸")} ${theme.fg("text", toolLine)}`, w), 0, 0));
+		const argsPreview = prog.currentToolArgs
+			? fitInlinePreview(prog.currentToolArgs, bodyWidth - visibleWidth(`${prog.currentTool}: `) - 2)
+			: "";
+		const toolLine = argsPreview ? `${prog.currentTool}: ${argsPreview}` : prog.currentTool;
+		addTreeLine(c, bodyPrefix, `${theme.fg("warning", "▸")} ${theme.fg("text", toolLine)}`, w);
 	} else if (isRunning && prog.lastMessage) {
-		c.addChild(new Text(truncLine(`  ${theme.fg("dim", prog.lastMessage)}`, w), 0, 0));
+		addTreeLine(c, bodyPrefix, theme.fg("dim", fitInlinePreview(prog.lastMessage, bodyWidth)), w);
 	} else if (isPending) {
-		c.addChild(new Text(`  ${theme.fg("dim", "waiting...")}`, 0, 0));
+		addTreeLine(c, bodyPrefix, theme.fg("dim", "waiting..."), w);
 	} else if (isFailed && prog.error) {
-		const errLine = prog.error.split("\n")[0].slice(0, 100);
-		c.addChild(new Text(truncLine(`  ${theme.fg("error", errLine)}`, w), 0, 0));
+		const errLine = fitInlinePreview(prog.error.split("\n")[0], bodyWidth);
+		addTreeLine(c, bodyPrefix, theme.fg("error", errLine), w);
 	} else if (isDone) {
-		// Show first line of output or last message
-		const summary = prog.lastMessage || (r.output ? r.output.split("\n")[0].slice(0, 100) : "done");
-		c.addChild(new Text(truncLine(`  ${theme.fg("success", summary)}`, w), 0, 0));
+		const summarySource = prog.lastMessage || (r.output ? r.output.split("\n")[0] : "done");
+		addTreeLine(c, bodyPrefix, theme.fg("success", fitInlinePreview(summarySource, bodyWidth)), w);
 	}
 
-	// ── Line 3 (collapsed): usage summary ──
 	if (!expanded) {
 		const usageParts: string[] = [];
 		if (r.usage.turns) usageParts.push(`${r.usage.turns} turn${r.usage.turns > 1 ? "s" : ""}`);
 		if (r.usage.cost) usageParts.push(`$${r.usage.cost.toFixed(4)}`);
 		if (usageParts.length) {
-			c.addChild(new Text(`  ${theme.fg("dim", usageParts.join(" · "))}`, 0, 0));
+			addTreeLine(c, bodyPrefix, theme.fg("dim", usageParts.join(" · ")), w);
 		}
 	}
 
-	// ── Expanded: full detail ──
 	if (expanded) {
-		c.addChild(new Spacer(1));
+		addTreeLine(c, bodyPrefix, theme.fg("dim", `Task: ${fitInlinePreview(r.task, bodyWidth - visibleWidth("Task: "))}`), w);
 
-		// Task
-		c.addChild(new Text(theme.fg("dim", `Task: ${r.task}`), 0, 0));
-		c.addChild(new Spacer(1));
-
-		// Recent tools
 		if (prog.recentTools.length > 0) {
-			for (const t of prog.recentTools) {
-				c.addChild(new Text(truncLine(theme.fg("muted", `  ${t.tool}: ${t.args}`), w), 0, 0));
+			for (let i = 0; i < prog.recentTools.length; i++) {
+				const t = prog.recentTools[i];
+				const toolPrefix = i === prog.recentTools.length - 1 ? "└─ " : "├─ ";
+				const argsPreview = t.args
+					? fitInlinePreview(t.args, bodyWidth - visibleWidth(toolPrefix) - visibleWidth(`${t.tool}()`))
+					: "";
+				const toolLine = argsPreview ? `${t.tool}(${argsPreview})` : `${t.tool}()`;
+				addTreeLine(c, `${bodyPrefix}${toolPrefix}`, theme.fg("muted", toolLine), w);
 			}
-			c.addChild(new Spacer(1));
 		}
 
-		// Full output
 		if (!isRunning && r.output) {
 			const mdTheme = getMarkdownTheme();
-			c.addChild(new Markdown(r.output, 0, 0, mdTheme));
-			c.addChild(new Spacer(1));
+			const markdown = new Markdown(r.output, 0, 0, mdTheme);
+			for (const line of markdown.render(bodyWidth)) {
+				addTreeLine(c, bodyPrefix, line, w);
+			}
 		}
 
-		// Full usage breakdown
 		const usageParts: string[] = [];
 		if (r.usage.turns) usageParts.push(`${r.usage.turns} turn${r.usage.turns > 1 ? "s" : ""}`);
 		if (r.usage.input) usageParts.push(`in:${formatUtils.formatTokens(r.usage.input)}`);
@@ -642,7 +648,7 @@ function renderAgentProgress(
 		if (r.usage.cacheWrite) usageParts.push(`cW:${formatUtils.formatTokens(r.usage.cacheWrite)}`);
 		if (r.usage.cost) usageParts.push(`$${r.usage.cost.toFixed(4)}`);
 		if (usageParts.length) {
-			c.addChild(new Text(theme.fg("dim", usageParts.join(" · ")), 0, 0));
+			addTreeLine(c, bodyPrefix, theme.fg("dim", usageParts.join(" · ")), w);
 		}
 	}
 
@@ -864,17 +870,14 @@ export default function (pi: ExtensionAPI) {
 						0, 0,
 					),
 				);
-				c.addChild(new Spacer(1));
-
 				for (let i = 0; i < details.results.length; i++) {
 					const r = details.results[i];
-					c.addChild(renderAgentProgress(r, theme, expanded, w));
-					if (i < details.results.length - 1) c.addChild(new Spacer(1));
+					c.addChild(renderAgentProgress(r, theme, expanded, w, i === details.results.length - 1));
 				}
 			} else {
 				// Single agent
 				const r = details.results[0];
-				c.addChild(renderAgentProgress(r, theme, expanded, w));
+				c.addChild(renderAgentProgress(r, theme, expanded, w, true));
 			}
 
 			return c;
