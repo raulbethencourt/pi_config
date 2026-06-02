@@ -181,3 +181,7 @@ export function loadRoutingConfig(configDir: string): { routing: RoutingConfig; 
 		return { routing: {}, fallback: DEFAULT_FALLBACK };
 	}
 }
+
+export function loadRouting(configDir: string): RoutingConfig {
+	return loadRoutingConfig(configDir).routing;
+}

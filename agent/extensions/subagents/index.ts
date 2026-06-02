@@ -15,7 +15,8 @@ import * as formatUtils from "../shared/format.ts";
 import { extractTextContent } from "../shared/content.ts";
 import { registerFallbackCommand } from "./fallback.ts";
 import { resolveModel, resolveFallbackModel, loadRoutingConfig, type ComplexityTier } from "./routing.ts";
-import { spawnPiProcess } from "./runner.ts";
+import { decrementActiveSubagentCount, incrementActiveSubagentCount } from "./activity.ts";
+import { hasRateLimitSignal, spawnPiProcess } from "./runner.ts";
 import { initTelemetryDb, logRun, logToolCalls } from "./telemetry.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -47,6 +48,7 @@ export interface AgentProgress {
 	durationMs: number;
 	lastMessage: string;
 	error?: string;
+	retryState?: string;
 }
 
 export interface AgentResult {
@@ -269,22 +271,6 @@ function addTreeLine(container: Container, prefix: string, content: string, maxW
 
 // ── Subagent Execution ────────────────────────────────────────────────
 
-// Quota exhaustion detection for auto-retry
-function isQuotaExhausted(stderr: string, exitCode: number): boolean {
-	if (exitCode === 429 || exitCode === 403) return true;
-	const patterns = [
-		/quota.*exhausted/i,
-		/rate.*limit/i,
-		/429/i,
-		/too.*many.*requests/i,
-		/billing.*quota/i,
-		/insufficient.*quota/i,
-		/monthly.*limit/i,
-		/daily.*limit/i,
-	];
-	return patterns.some((p) => p.test(stderr));
-}
-
 async function buildPiArgs(
 	agent: AgentConfig,
 	task: string,
@@ -416,6 +402,7 @@ async function runSubagent(
 		},
 	};
 
+	incrementActiveSubagentCount();
 	const startTime = Date.now();
 	const progress = result.progress;
 	const fireUpdate = throttle(() => {
@@ -439,13 +426,19 @@ async function runSubagent(
 
 		result.exitCode = exitCode;
 
-		if (exitCode !== 0 && !initialUsedFallback && isQuotaExhausted(stderrBuf, exitCode)) {
+		if (exitCode !== 0 && !initialUsedFallback && hasRateLimitSignal(stderrBuf, exitCode)) {
 			const fallbackModel = resolveFallbackModel(tier as ComplexityTier, FALLBACK_CONFIG);
 			const fallbackPiArgs = [...piArgs];
 			const modelIdx = fallbackPiArgs.indexOf("--models");
 			if (modelIdx !== -1) fallbackPiArgs[modelIdx + 1] = fallbackModel;
 
+			if (!progress.retryState) {
+				progress.retryState = "rate-limited";
+				fireUpdate();
+			}
 			progress.error = undefined;
+			progress.retryState = "retrying";
+			fireUpdate();
 			const { exitCode: retryExitCode } = await spawnPiProcess({
 				command,
 				spawnArgs: fallbackPiArgs.slice(1),
@@ -462,9 +455,14 @@ async function runSubagent(
 			result.exitCode = retryExitCode;
 			result.model = fallbackModel;
 			result.usedFallback = true;
+			if (progress.retryState === "retrying") {
+				progress.retryState = retryExitCode === 0 ? "retried" : "retry-failed";
+			}
+			fireUpdate();
 			console.error(`[fallback] Quota exhausted, retried with ${fallbackModel}`);
 		}
 	} finally {
+		decrementActiveSubagentCount();
 		try {
 			fs.rmSync(tempDir, { recursive: true, force: true });
 		} catch {}
@@ -533,6 +531,11 @@ export async function mapConcurrent<T, R>(
 // ── Rendering ─────────────────────────────────────────────────────────
 
 type Theme = ExtensionContext["ui"]["theme"];
+export type ThemeColor = Parameters<Theme["fg"]>[0];
+
+export function formatBadge(label: string, color: ThemeColor, theme: Theme): string {
+	return theme.fg(color, `[${label}]`);
+}
 
 export function getTermWidth(): number {
 	return process.stdout.columns || 120;
@@ -586,8 +589,18 @@ function renderAgentProgress(
 	stats.push(formatUtils.formatDuration(prog.durationMs));
 	const statsStr = theme.fg("dim", stats.join(" · "));
 
+	const badgeParts: string[] = [];
+	if (prog.retryState) {
+		const badgeColor: ThemeColor = prog.retryState === "rate-limited"
+			? "error"
+			: prog.retryState === "retry-failed"
+				? "error"
+				: "warning";
+		badgeParts.push(formatBadge(prog.retryState, badgeColor, theme));
+	}
+	const badges = badgeParts.length > 0 ? ` ${badgeParts.join(" ")}` : "";
 	const modelShort = r.model ? r.model.split("/").pop() || "" : "";
-	const line1 = `${icon} ${progressBar} ${theme.fg("toolTitle", theme.bold(r.agent))} ${theme.fg("dim", modelShort)} ${statsStr}`;
+	const line1 = `${icon} ${progressBar} ${theme.fg("toolTitle", theme.bold(r.agent))} ${theme.fg("dim", modelShort)}${badges} ${statsStr}`;
 	addTreeLine(c, headPrefix, line1, w);
 
 	if (isRunning && prog.currentTool) {
