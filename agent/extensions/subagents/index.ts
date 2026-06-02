@@ -115,6 +115,7 @@ function resolveContextModeExtension(): string | null {
 }
 
 const CONTEXT_MODE_EXTENSION = resolveContextModeExtension();
+const HASHLINE_EXTENSION = path.resolve(EXT_DIR, "../hashline/index.ts");
 const { routing: ROUTING_CONFIG, fallback: FALLBACK_CONFIG } = loadRoutingConfig(path.dirname(AGENTS_DIR));
 
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
@@ -333,6 +334,11 @@ async function buildPiArgs(
 	// Always load context-mode extension for session tracking and routing if available
 	if (CONTEXT_MODE_EXTENSION) {
 		args.push("--extension", CONTEXT_MODE_EXTENSION);
+	}
+
+	// Always load hashline extension for consistent edit tool behavior
+	if (fs.existsSync(HASHLINE_EXTENSION)) {
+		args.push("--extension", HASHLINE_EXTENSION);
 	}
 
 	const { model: routedModel, tier: complexityTier, usedFallback } = resolveModel(

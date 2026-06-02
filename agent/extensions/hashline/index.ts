@@ -10,8 +10,6 @@ import { extractPathsFromEditInput, resolveAbsolutePath, stripSelector } from ".
 const MAX_SESSIONS = 50;
 const HASHLINE_CUSTOM_EDIT_FLAG = "hashlineCustomEdit";
 const stores = new Map<string, SnapshotStore>();
-let editToolRegistered = false;
-let editToolOwner: ExtensionAPI | undefined;
 
 export const HASHLINE_SYSTEM_PROMPT_BLOCK = `## Edit Tool: Hashline Mode
 
@@ -47,9 +45,8 @@ function resolveSessionId(ctx: any): string | undefined {
     ["ctx.cwd", typeof ctx?.cwd === "string" ? `ephemeral:${ctx.cwd}` : undefined],
   ];
 
-  for (const [source, candidate] of candidates) {
+  for (const [_source, candidate] of candidates) {
     if (typeof candidate === "string" && candidate.length > 0) {
-      console.debug(`hashline: session resolved via ${source}:`, candidate);
       return candidate;
     }
   }
@@ -96,14 +93,14 @@ function setStore(sessionId: string, store: SnapshotStore): void {
   }
 }
 
-function activateCustomEditTool(pi: ExtensionAPI): void {
+async function activateCustomEditTool(pi: ExtensionAPI): Promise<void> {
   if (typeof pi.getActiveTools !== "function" || typeof pi.setActiveTools !== "function") {
     return;
   }
 
   const nextActiveTools = pi.getActiveTools().filter((toolName) => toolName !== "edit");
   nextActiveTools.push("edit");
-  pi.setActiveTools(nextActiveTools);
+  await pi.setActiveTools(nextActiveTools);
 }
 
 function wasHandledByHashlineEditTool(event: any): boolean {
@@ -174,21 +171,15 @@ function createEditTool() {
 }
 
 export default function hashline(pi: ExtensionAPI) {
-  console.log("hashline: extension loaded");
+  pi.registerTool(createEditTool());
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     const sessionId = resolveSessionId(ctx);
     if (sessionId) {
       setStore(sessionId, createSnapshotStore());
     }
 
-    if ((!editToolRegistered || editToolOwner !== pi) && typeof pi.registerTool === "function") {
-      pi.registerTool(createEditTool());
-      editToolRegistered = true;
-      editToolOwner = pi;
-    }
-
-    activateCustomEditTool(pi);
+    await activateCustomEditTool(pi);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
@@ -201,7 +192,7 @@ export default function hashline(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event) => {
     return {
-      systemPrompt: [...event.systemPrompt, HASHLINE_SYSTEM_PROMPT_BLOCK],
+      systemPrompt: `${event.systemPrompt}\n\n${HASHLINE_SYSTEM_PROMPT_BLOCK}`,
     };
   });
 
