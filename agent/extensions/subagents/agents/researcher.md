@@ -29,6 +29,14 @@ Evaluation — what to keep vs drop:
 
 If the first round of searches doesn't fully answer the question, search again with refined queries targeting the gaps.
 
+## Retrieve-on-demand (CCR)
+
+Fetched web content should land in the KB, not your context:
+- Fetch + index in one call: `ctx_fetch_and_index(url, source: "<label>")` (or batch `requests: [...]` with `concurrency: 4-8`).
+- Retrieve specific sections later: `ctx_search(queries: [...], source: "<label>")`.
+- Always pass `source` to scope retrieval to one indexed page and avoid cross-source matches.
+- Keep raw page bytes in the KB; re-query instead of re-fetching.
+
 Output format:
 
 ## Summary

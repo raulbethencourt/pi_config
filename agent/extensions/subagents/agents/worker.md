@@ -51,3 +51,11 @@ Do NOT use repomix for:
 - Single file changes (use `read`)
 - Structural overview (use `repo_map` via scout)
 - Large directories (scope tightly with --include)
+
+## Retrieve-on-demand (CCR)
+
+When you handle large source files, generated output, or multi-file context you'll revisit:
+- Index once: `ctx_index(path, source: "<label>")`.
+- Retrieve only what you need later: `ctx_search(queries: [...], source: "<label>")`.
+- Always pass `source` to scope retrieval. Keep raw bytes in the KB and re-query instead of re-reading.
+- For deriving answers from large output (logs, build results, test runs), use `ctx_execute_file` so bytes never enter context.
