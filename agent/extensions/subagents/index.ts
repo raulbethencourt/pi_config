@@ -92,7 +92,7 @@ function loadConfig(): ExtensionConfig {
 }
 
 // Built-in tools that pi provides natively (no extension needed)
-const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
+const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls", "rg"]);
 
 // Custom tools that require loading an extension into the subagent process
 const EXT_BASE = path.join(process.env.HOME || "~", ".pi", "agent", "extensions");

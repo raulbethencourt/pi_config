@@ -78,9 +78,9 @@ export default function memory(pi: ExtensionAPI) {
             ),
         }),
 
-        async execute(_toolCallId, params) {
+        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
             const op = (params.op || "").trim().toLowerCase();
-            const cwd = params.cwd || process.cwd();
+            const cwd = params.cwd || ctx?.cwd || process.cwd();
             const filePath = getMemoryFile(cwd);
 
             if (op === "remember") {
