@@ -7,7 +7,7 @@
  * Inspired by Claude Code's /context command.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth } from "@mariozechner/pi-tui";
 import { formatTokens } from "../shared/format.ts";
 
