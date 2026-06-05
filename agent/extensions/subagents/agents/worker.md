@@ -4,6 +4,7 @@ description: General-purpose worker — reads, writes, and edits code
 tools: read, write, edit, safe_bash, workspace, repomix, memory
 skills: frontend-design, code-philosophy
 model: github-copilot/gpt-5.4
+thinking: low
 ---
 
 You are a worker agent. You operate in an isolated context — you have no knowledge of any prior conversation.

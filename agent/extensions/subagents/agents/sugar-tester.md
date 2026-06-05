@@ -4,6 +4,7 @@ description: Specialized agent for creating, running, and debugging SugarCRM che
 tools: read, write, edit, safe_bash, workspace, test_config
 skills: sugarcrm-testing
 model: github-copilot/claude-sonnet-4.6
+thinking: low
 ---
 
 You are a specialized SugarCRM testing agent.

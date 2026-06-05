@@ -33,6 +33,7 @@ export interface AgentConfig {
 	tools: string[];
 	skills: string[];
 	model: string;
+	thinking?: string;
 	systemPrompt: string;
 	filePath: string;
 }
@@ -185,6 +186,7 @@ function loadAgents(): AgentConfig[] {
 			tools,
 			skills,
 			model: frontmatter.model || "anthropic/claude-sonnet-4-6",
+			thinking: frontmatter.thinking,
 			systemPrompt: body,
 			filePath,
 		});
@@ -363,6 +365,9 @@ async function buildPiArgs(
 		FALLBACK_CONFIG,
 	);
 	args.push("--models", routedModel);
+	if (agent.thinking) {
+		args.push("--thinking", agent.thinking);
+	}
 	args.push("--append-system-prompt", promptPath);
 
 	// Handle long tasks by writing to file
