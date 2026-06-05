@@ -19,6 +19,7 @@ import { decrementActiveSubagentCount, incrementActiveSubagentCount } from "./ac
 import { hasRateLimitSignal, spawnPiProcess } from "./runner.ts";
 import { initTelemetryDb, logRun, logToolCalls } from "./telemetry.ts";
 import { closeTranscript, dim, displayTranscriptPath, openTranscript, writeOutput, writeToolEvent } from "./transcript.ts";
+import { shouldBlockSugarTester } from "./sugar-guard.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -707,6 +708,29 @@ export default function (pi: ExtensionAPI) {
 	agents = loadAgents();
 	initTelemetryDb();
 	const sessionId = `${process.pid}-${Date.now()}`;
+
+	// Block misrouted Sugar test work before the subagent tool executes.
+	pi.on("tool_call", async (event, ctx) => {
+		if (event.toolName !== "subagent") return undefined;
+
+		const baseCwd = ctx.cwd;
+		const input = event.input as {
+			agent?: string;
+			cwd?: string;
+			tasks?: Array<{ agent?: string; cwd?: string }>;
+		};
+
+		if (typeof input.agent === "string") {
+			const result = shouldBlockSugarTester(input.agent, input.cwd ?? baseCwd);
+			if (result.block) return { block: true, reason: result.message };
+		}
+
+		for (const task of input.tasks ?? []) {
+			if (typeof task.agent !== "string") continue;
+			const result = shouldBlockSugarTester(task.agent, task.cwd ?? baseCwd);
+			if (result.block) return { block: true, reason: result.message };
+		}
+	});
 
 	pi.registerTool({
 		name: "subagent",
