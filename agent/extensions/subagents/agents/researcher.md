@@ -1,8 +1,8 @@
 ---
 name: researcher
 description: Web researcher — searches the web and synthesizes findings
-tools: web_search, web_fetch
-skills: websearch
+tools: web_search, web_fetch, fetch_content, get_search_content, code_search
+skills: librarian
 model: github-copilot/gemini-3.5-flash
 ---
 
