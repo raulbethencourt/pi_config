@@ -20,6 +20,8 @@ import { hasRateLimitSignal, spawnPiProcess } from "./runner.ts";
 import { initTelemetryDb, logRun, logToolCalls } from "./telemetry.ts";
 import { closeTranscript, dim, displayTranscriptPath, openTranscript, writeOutput, writeToolEvent } from "./transcript.ts";
 import { shouldBlockSugarTester } from "./sugar-guard.ts";
+import { filterChildTools } from "./filter-child-tools.ts";
+import { stripParentOrchestrationContent } from "./strip-orchestration.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -283,10 +285,14 @@ async function buildPiArgs(
 	const piBin = resolvePiBinary();
 	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sub-"));
 
+	const parentDepth = Number(process.env.PI_SUBAGENT_DEPTH ?? "0");
+	const childDepth = Number.isFinite(parentDepth) ? parentDepth + 1 : 1;
+	const systemPrompt = stripParentOrchestrationContent(agent.systemPrompt);
+
 	// Write system prompt to temp file
 	const promptPath = path.join(tempDir, `${agent.name}.md`);
 	await withFileMutationQueue(promptPath, async () => {
-		await fs.promises.writeFile(promptPath, agent.systemPrompt, { encoding: "utf-8", mode: 0o600 });
+		await fs.promises.writeFile(promptPath, systemPrompt, { encoding: "utf-8", mode: 0o600 });
 	});
 
 	const args = [...piBin.baseArgs, "--mode", "json", "-p", "--no-session"];
@@ -304,10 +310,11 @@ async function buildPiArgs(
 	}
 
 	// Separate builtin tools from custom tools
+	const childTools = filterChildTools(agent.tools, agent.name, childDepth);
 	const builtinTools: string[] = [];
 	const extensionPaths = new Set<string>();
 
-	for (const tool of agent.tools) {
+	for (const tool of childTools) {
 		if (BUILTIN_TOOLS.has(tool)) {
 			builtinTools.push(tool);
 		} else if (CUSTOM_TOOL_EXTENSIONS[tool]) {
@@ -319,7 +326,7 @@ async function buildPiArgs(
 	args.push("--no-extensions");
 
 	// Include custom tool names in the allowlist so extension-registered tools aren't blocked
-	const customToolNames = Object.keys(CUSTOM_TOOL_EXTENSIONS).filter(t => agent.tools.includes(t));
+	const customToolNames = Object.keys(CUSTOM_TOOL_EXTENSIONS).filter(t => childTools.includes(t));
 	const allToolNames = [...builtinTools, ...customToolNames];
 	if (allToolNames.length > 0) {
 		args.push("--tools", allToolNames.join(","));
