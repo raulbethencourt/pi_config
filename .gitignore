@@ -42,3 +42,4 @@ agent/.pi
 agent/settings.json
 agent/docs/
 runs/
+agent/fallback-mode.json
