@@ -14,6 +14,7 @@ import { Type } from "typebox";
 import * as formatUtils from "../shared/format.ts";
 import { extractTextContent } from "../shared/content.ts";
 import { registerFallbackCommand } from "./fallback.ts";
+import { applyAgentOverrides } from "./agent-overrides.ts";
 import { resolveModel, resolveFallbackModel, loadRoutingConfig, type ComplexityTier } from "./routing.ts";
 import { decrementActiveSubagentCount, incrementActiveSubagentCount } from "./activity.ts";
 import { hasRateLimitSignal, spawnPiProcess } from "./runner.ts";
@@ -278,10 +279,11 @@ function addTreeLine(container: Container, prefix: string, content: string, maxW
 // ── Subagent Execution ────────────────────────────────────────────────
 
 async function buildPiArgs(
-	agent: AgentConfig,
+	baseAgent: AgentConfig,
 	task: string,
 	cwd: string,
 ): Promise<{ piArgs: string[]; tempDir: string; tier: string; usedFallback: boolean; routedModel: string }> {
+	const agent = applyAgentOverrides(baseAgent, ROUTING_CONFIG.agentOverrides);
 	const piBin = resolvePiBinary();
 	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sub-"));
 
