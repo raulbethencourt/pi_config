@@ -22,6 +22,7 @@ import { initTelemetryDb, logRun, logToolCalls } from "./telemetry.ts";
 import { closeTranscript, dim, displayTranscriptPath, openTranscript, writeOutput, writeToolEvent } from "./transcript.ts";
 import { shouldBlockSugarTester } from "./sugar-guard.ts";
 import { filterChildTools } from "./filter-child-tools.ts";
+import { stripChildPromptHook } from "./strip-child-prompt-hook.ts";
 import { stripParentOrchestrationContent } from "./strip-orchestration.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -717,6 +718,12 @@ export default function (pi: ExtensionAPI) {
 	agents = loadAgents();
 	initTelemetryDb();
 	const sessionId = `${process.pid}-${Date.now()}`;
+
+	pi.on("before_agent_start", async (event: { systemPrompt: string }) => {
+		const depth = Number(process.env.PI_SUBAGENT_DEPTH ?? "0");
+		const safeDepth = Number.isFinite(depth) ? depth : 0;
+		return stripChildPromptHook(event, safeDepth);
+	});
 
 	// Block misrouted Sugar test work before the subagent tool executes.
 	pi.on("tool_call", async (event, ctx) => {
