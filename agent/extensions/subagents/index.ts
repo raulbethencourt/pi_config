@@ -125,11 +125,11 @@ const HASHLINE_EXTENSION = path.resolve(EXT_DIR, "../hashline/index.ts");
 const { routing: ROUTING_CONFIG, fallback: FALLBACK_CONFIG } = loadRoutingConfig(path.dirname(AGENTS_DIR));
 
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
-	web_search: path.join(EXT_BASE, "..", "..", "npm", "node_modules", "pi-web-access", "index.ts"),
+	web_search: path.join(EXT_BASE, "..", "npm", "node_modules", "pi-web-access", "index.ts"),
 	web_fetch: path.join(EXT_BASE, "web-fetch", "index.ts"),
-	fetch_content: path.join(EXT_BASE, "..", "..", "npm", "node_modules", "pi-web-access", "index.ts"),
-	get_search_content: path.join(EXT_BASE, "..", "..", "npm", "node_modules", "pi-web-access", "index.ts"),
-	code_search: path.join(EXT_BASE, "..", "..", "npm", "node_modules", "pi-web-access", "index.ts"),
+	fetch_content: path.join(EXT_BASE, "..", "npm", "node_modules", "pi-web-access", "index.ts"),
+	get_search_content: path.join(EXT_BASE, "..", "npm", "node_modules", "pi-web-access", "index.ts"),
+	code_search: path.join(EXT_BASE, "..", "npm", "node_modules", "pi-web-access", "index.ts"),
 	safe_bash: path.join(TOOLS_DIR, "safe-bash.ts"),
 	ast_grep: path.join(TOOLS_DIR, "ast-grep.ts"),
 	repo_map: path.join(TOOLS_DIR, "repo-map.ts"),
