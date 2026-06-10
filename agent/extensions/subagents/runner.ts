@@ -47,8 +47,9 @@ export async function spawnPiProcess(opts: {
 	fireUpdate: () => void;
 	extractToolArgsPreview: (args: Record<string, unknown>) => string;
 	extractTextContent: (content: unknown) => string;
+	env?: Record<string, string | undefined>;
 }): Promise<{ exitCode: number; stderrBuf: string }> {
-	const { command, spawnArgs, cwd, signal, result, progress, startTime, fireUpdate, extractToolArgsPreview, extractTextContent } = opts;
+	const { command, spawnArgs, cwd, signal, result, progress, startTime, fireUpdate, extractToolArgsPreview, extractTextContent, env } = opts;
 
 	let stderrBuf = "";
 
@@ -56,6 +57,7 @@ export async function spawnPiProcess(opts: {
 		const proc = spawn(command, spawnArgs, {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
+			env: { ...process.env, ...env },
 		});
 
 		let buf = "";

@@ -2,6 +2,7 @@
 name: scout
 description: Fast codebase recon — explores files, finds patterns, maps architecture
 tools: read, grep, find, ls, rg, ast_grep, repo_map, repomix, git_inspect, memory
+mcpTools: github/search_repositories, github/get_file_contents
 skills: delta
 model: github-copilot/gpt-5.4-mini
 thinking: off

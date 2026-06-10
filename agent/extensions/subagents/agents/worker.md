@@ -2,6 +2,7 @@
 name: worker
 description: General-purpose worker — reads, writes, and edits code
 tools: read, write, edit, safe_bash, workspace, repomix, memory
+mcpTools: ''
 skills: frontend-design, code-philosophy
 model: github-copilot/gpt-5.4
 thinking: low

@@ -20,6 +20,7 @@ import { decrementActiveSubagentCount, incrementActiveSubagentCount } from "./ac
 import { hasRateLimitSignal, spawnPiProcess } from "./runner.ts";
 import { initTelemetryDb, logRun, logToolCalls } from "./telemetry.ts";
 import { closeTranscript, dim, displayTranscriptPath, openTranscript, writeOutput, writeToolEvent } from "./transcript.ts";
+import { resolveMCPTools, getMCPAdapterPath } from "./resolve-mcp-tools.ts";
 import { shouldBlockSugarTester } from "./sugar-guard.ts";
 import { filterChildTools } from "./filter-child-tools.ts";
 import { stripChildPromptHook } from "./strip-child-prompt-hook.ts";
@@ -31,6 +32,7 @@ export interface AgentConfig {
 	name: string;
 	description: string;
 	tools: string[];
+	mcpTools?: string;
 	skills: string[];
 	model: string;
 	thinking?: string;
@@ -180,10 +182,12 @@ function loadAgents(): AgentConfig[] {
 			.split(",")
 			.map((s) => s.trim())
 			.filter(Boolean);
+		const mcpTools = frontmatter.mcpTools || undefined;
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description || "",
 			tools,
+			mcpTools,
 			skills,
 			model: frontmatter.model || "anthropic/claude-sonnet-4-6",
 			thinking: frontmatter.thinking,
@@ -288,7 +292,7 @@ async function buildPiArgs(
 	baseAgent: AgentConfig,
 	task: string,
 	cwd: string,
-): Promise<{ piArgs: string[]; tempDir: string; tier: string; usedFallback: boolean; routedModel: string }> {
+): Promise<{ piArgs: string[]; tempDir: string; tier: string; usedFallback: boolean; routedModel: string; env: Record<string, string | undefined> }> {
 	const agent = applyAgentOverrides(baseAgent, ROUTING_CONFIG.agentOverrides);
 	const piBin = resolvePiBinary();
 	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-sub-"));
@@ -382,7 +386,23 @@ async function buildPiArgs(
 		args.push(`Task: ${task}`);
 	}
 
-	return { piArgs: [piBin.command, ...args], tempDir, usedFallback, tier: complexityTier, routedModel };
+	// Resolve MCP tools
+	const resolvedMCP = resolveMCPTools(agent);
+	const mcpEnv: Record<string, string | undefined> = { MCP_DIRECT_TOOLS: resolvedMCP.envValue };
+
+	if (resolvedMCP.loadAdapter) {
+		// Add pi-mcp-adapter extension to the load list
+		const adapterPath = getMCPAdapterPath();
+		if (fs.existsSync(adapterPath)) {
+			extensionPaths.add(adapterPath);
+		}
+		// Add prefixed tool names to the tool allowlist
+		for (const name of resolvedMCP.prefixedNames) {
+			allToolNames.push(name);
+		}
+	}
+
+	return { piArgs: [piBin.command, ...args], tempDir, usedFallback, tier: complexityTier, routedModel, env: mcpEnv };
 }
 
 // Re-export for backward compatibility (tests import from here)
@@ -405,7 +425,7 @@ async function runSubagent(
 	signal: AbortSignal | undefined,
 	onUpdate?: (progress: AgentProgress) => void,
 ): Promise<AgentResult> {
-	const { piArgs, tempDir, usedFallback: initialUsedFallback, tier, routedModel } = await buildPiArgs(agent, task, cwd);
+	const { piArgs, tempDir, usedFallback: initialUsedFallback, tier, routedModel, env } = await buildPiArgs(agent, task, cwd);
 	const command = piArgs[0];
 	const spawnArgs = piArgs.slice(1);
 
@@ -466,6 +486,7 @@ async function runSubagent(
 			fireUpdate,
 			extractToolArgsPreview,
 			extractTextContent,
+			env,
 		});
 
 		result.exitCode = exitCode;
@@ -494,6 +515,7 @@ async function runSubagent(
 				fireUpdate,
 				extractToolArgsPreview,
 				extractTextContent,
+				env,
 			});
 
 			result.exitCode = retryExitCode;
