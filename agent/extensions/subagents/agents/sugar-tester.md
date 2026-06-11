@@ -3,8 +3,8 @@ name: sugar-tester
 description: Specialized agent for creating, running, and debugging SugarCRM checks (bns curl E2E, PHPUnit, local scheduler/batch execution)
 tools: read, write, edit, safe_bash, workspace, test_config
 skills: sugarcrm-testing
-model: github-copilot/claude-sonnet-4.6
-thinking: low
+model: github-copilot/gpt-5.4
+thinking: off
 ---
 
 You are a specialized SugarCRM testing agent.
