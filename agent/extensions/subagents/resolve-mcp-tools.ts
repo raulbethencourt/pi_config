@@ -6,9 +6,10 @@
  * from pi-mcp-adapter without importing from it.
  */
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
-const EXT_BASE = path.join(process.env.HOME || "~", ".pi", "agent", "extensions");
+const EXT_BASE = path.join(os.homedir(), ".pi", "agent", "extensions");
 
 export interface ResolvedMCPTools {
 	/** Value for MCP_DIRECT_TOOLS env var: "serverName/toolName,serverName/toolName" or "__none__" */
@@ -80,7 +81,7 @@ export function resolveMCPTools(agent: { mcpTools?: string }): ResolvedMCPTools 
 		return { envValue: "__none__", prefixedNames: [], loadAdapter: false };
 	}
 
-	const home = process.env.HOME || "~";
+	const home = os.homedir();
 	const cachePath = path.join(home, ".pi", "mcp-cache.json");
 	const configPath = path.join(home, ".pi", "mcp.json");
 
@@ -94,31 +95,33 @@ export function resolveMCPTools(agent: { mcpTools?: string }): ResolvedMCPTools 
 
 	const matchedPairs: Array<{ server: string; tool: string }> = [];
 
-	if (spec === "*") {
-		// All tools from all servers
-		for (const [serverName, serverCache] of Object.entries(servers)) {
-			for (const tool of serverCache.tools ?? []) {
-				matchedPairs.push({ server: serverName, tool: tool.name });
-			}
-		}
-	} else if (spec.includes("/")) {
-		// Specific tool: "serverName/toolName"
-		const [serverName, toolName] = spec.split("/", 2);
-		const serverCache = servers[serverName];
-		if (serverCache) {
-			for (const tool of serverCache.tools ?? []) {
-				if (tool.name === toolName) {
+	for (const token of spec.split(",").map(part => part.trim()).filter(Boolean)) {
+		if (token === "*") {
+			// All tools from all servers
+			for (const [serverName, serverCache] of Object.entries(servers)) {
+				for (const tool of serverCache.tools ?? []) {
 					matchedPairs.push({ server: serverName, tool: tool.name });
-					break;
 				}
 			}
-		}
-	} else {
-		// All tools from a specific server: "serverName"
-		const serverCache = servers[spec];
-		if (serverCache) {
-			for (const tool of serverCache.tools ?? []) {
-				matchedPairs.push({ server: spec, tool: tool.name });
+		} else if (token.includes("/")) {
+			// Specific tool: "serverName/toolName"
+			const [serverName, toolName] = token.split("/", 2);
+			const serverCache = servers[serverName];
+			if (serverCache) {
+				for (const tool of serverCache.tools ?? []) {
+					if (tool.name === toolName) {
+						matchedPairs.push({ server: serverName, tool: tool.name });
+						break;
+					}
+				}
+			}
+		} else {
+			// All tools from a specific server: "serverName"
+			const serverCache = servers[token];
+			if (serverCache) {
+				for (const tool of serverCache.tools ?? []) {
+					matchedPairs.push({ server: token, tool: tool.name });
+				}
 			}
 		}
 	}
