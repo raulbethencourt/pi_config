@@ -43,3 +43,4 @@ agent/settings.json
 agent/docs/
 runs/
 agent/fallback-mode.json
+agent/trust.json
