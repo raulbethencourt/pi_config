@@ -78,6 +78,10 @@ Custom code in this project is identified by any of the `CUSTOM_MARKERS` values 
 | 4 | Deletion of files in `custom/modules/Emails/` — do NOT flag as lost custom code | These custom Emails module overrides were **deprecated code** and their deletion is expected and correct. |
 | 5 | Deletion of files in `custom/modules/Calendar/` — do NOT flag as lost custom code | These custom Calendar module overrides were **deprecated code** and their deletion is expected and correct. |
 | 6 | Deletion or removal of code related to `bns_detail_document_function` — do NOT flag as lost custom code | The `bns_detail_document_function` feature was **deprecated code** and all related files/references were **intentionally removed**. This includes the PHP file (`custom/modules/Opportunities/bns_detail_document_function.php`) and its JS handler in the Opportunities record view. |
+| 7 | Deletion of `custom/modules/bnsDeliveries/bns_deliveryPDF_FLOW.php` and `custom/modules/bnsOrders/bns_orderPDF_AMA.php` - do NOT flag as lost custom code | wrong custom from other clients, only take care if the code is in CUSTOM_MARKERS |
+| 8 | Deletion of footer related files | change of ui in last version |
+| 9 | Deletion of help layout related files | change in last version |
+| 10 | Deletion of connectors related files | change in last version |
 
 ## Known `CLIENT_NAME`-Specific Files
 
@@ -87,10 +91,12 @@ Custom code in this project is identified by any of the `CUSTOM_MARKERS` values 
 > whose names or paths contain `CLIENT_NAME` or `CUSTOM_MARKERS`.
 >
 > The agent runs:
+>
 > ```bash
 > git ls-tree -r --name-only origin/{{OLD_BRANCH}} -- custom/ modules/ include/ \
 >   | grep -iE '{{CUSTOM_MARKERS_GREP_PATTERN}}'
 > ```
+>
 > and categorizes results into Business Logic, UI, Language, and Asset groups below.
 
 ### Business Logic (hooks, PDFs)
@@ -125,6 +131,7 @@ Custom code in this project is identified by any of the `CUSTOM_MARKERS` values 
 > `OLD_BRANCH` that match `CUSTOM_MARKERS`.
 >
 > The agent runs:
+>
 > ```bash
 > git ls-tree -d --name-only origin/{{OLD_BRANCH}} -- modules/ \
 >   | xargs -I{} basename {} \
@@ -172,10 +179,12 @@ Generate a presentation-ready PDF from the results.
    - Each finding as a numbered subsection grouped by risk level (HIGH then MEDIUM),
      with Category, File, and Details fields
 2. Generate the PDF:
+
    ```bash
    pandoc COMPARISON_RESULTS_PDF.md -o COMPARISON_RESULTS.pdf \
      --pdf-engine=xelatex -V mainfont="DejaVu Sans" -V monofont="DejaVu Sans Mono"
    ```
+
 3. Verify output with `pdfinfo COMPARISON_RESULTS.pdf` (expect 1–2 pages)
 4. The intermediate `COMPARISON_RESULTS_PDF.md` can be kept or deleted at the user's discretion
 
