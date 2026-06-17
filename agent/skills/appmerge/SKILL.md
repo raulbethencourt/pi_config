@@ -56,6 +56,12 @@ auto-discovers client files and custom modules from the old branch.
 
 ## Workflow
 
+### Agent Responsibilities
+
+- **scout** performs the search and discovery work used throughout the workflow.
+- **worker** creates patches and writes `COMPARISON_CONTEXT.md` after the
+  comparison inputs and discovery results are known.
+
 ### Phase 0 — Variable Substitution & Auto-Discovery
 
 This phase transforms `COMPARISON_CONTEXT.md` from a template into a
