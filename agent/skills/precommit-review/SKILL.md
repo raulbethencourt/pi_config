@@ -1,6 +1,11 @@
 ---
-description: Pre-commit code review skill. Analyzes staged git diffs for security vulnerabilities, breaking changes, logic errors, and code quality issues before commit. Returns APPROVE or REJECT with actionable feedback.
+name: precommit-review
+description: >
+  Pre-commit code review skill. Analyzes staged git diffs for security vulnerabilities, breaking
+  changes, logic errors, and code quality issues before commit. Returns APPROVE or REJECT with
+  actionable feedback.
 ---
+
 # Pre-commit Code Review Skill
 
 You are reviewing a staged git diff before commit. Be fast, specific, and actionable.
