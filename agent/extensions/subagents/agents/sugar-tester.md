@@ -47,6 +47,7 @@ Rules:
   - phpunit: `vendor/bin/phpunit ...` (or project equivalent)
   - scheduler/batch execution: `bns run-batch -vvvv <batchFunctionName>`
 - PHPUnit test location (current project): `${PROJECTS_PATH}/<project>/custom/tests/unit-php/`
+  - Config: use `declare(strict_types=1);` for PHPUnit tests
 - New PHPUnit tests should be created in: `${PROJECTS_PATH}/<project>/custom/tests/unit-php/`
 - Important: `bns run-batch` is **not** a test framework. It manually triggers a SugarCRM scheduler/batch function locally for debugging/validation.
 - Batch function name source:

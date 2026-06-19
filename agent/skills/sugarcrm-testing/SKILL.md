@@ -16,18 +16,23 @@ Use this skill when asked to create tests, run tests, debug test failures, or im
 **Run single**: `bns test -v --continue-on-fail --curl ${TOOLS_PATH}/tests/<testname>.curl | ccze -A`
 
 #### JSON Output Mode
+
 Use `--json` for structured, machine-readable results (verbose is forced to 0):
+
 ```bash
 bns test --json --continue-on-fail --curl ${TOOLS_PATH}/tests/<name>.curl
 ```
+
 Add `--include-json-contents` to also get response/payload bodies in the output.
 
 For debugging failures with full trace, use verbose mode instead:
+
 ```bash
 bns test -vvv --continue-on-fail --curl ${TOOLS_PATH}/tests/<name>.curl | ccze -A
 ```
 
 Other useful flags:
+
 - `--get-variables` — list all defined variables
 - `--feed-missing-blueprints` — auto-generate blueprint reference files
 - `--feed-missing-tolerances` — auto-generate tolerance patterns
@@ -63,17 +68,20 @@ This means: **you don't need to manually specify test order**. Just create a `.s
 **fields.txt** — Central field replacement configuration at `${TOOLS_PATH}/tests/fields.txt`. Defines four types of automatic replacements applied to all curl files before execution:
 
 - **GREP** — Regex-based find/replace in the full curl command:
+
   ```
   GREP;rest/v[123]?[0-9].[0-9]+;rest/v'${BNS_TEST_API_VERSION//./_}'
   GREP;/Accounts/[0-9a-f]{8}-...-[0-9a-f]{12};/Accounts/'${ACCOUNT_ID}'
   ```
 
 - **HEADER** — HTTP header value replacement:
+
   ```
   HEADER;OAuth-Token;${ACCESS_TOKEN}
   ```
 
 - **FORM** — Form field value replacement (supports regex field names):
+
   ```
   FORM;[a-z_]*account_id;${ACCOUNT_ID}
   FORM;[a-z_]*contact_id;${CONTACT_ID}
@@ -81,12 +89,14 @@ This means: **you don't need to manually specify test order**. Just create a `.s
   ```
 
 - **JSON** — JSON body field replacement (uses jq paths):
+
   ```
   JSON;.billing_account_id;\"${ACCOUNT_ID}\"
   JSON;.assigned_user_id;\"1\"
   ```
 
 **setvariables files** (`<test>.curl.setvariables`) — Extract values from response:
+
 ```
 # JSON extraction (jq path syntax)
 CREATED_ACCOUNT_ID=JSON:.id
@@ -158,31 +168,39 @@ OPTIONAL;SOME_VAR=JSON:.optional_field
    - Strips session cookies (uses cookie jar)
    - Rewrites API version
 4. **Create a `.setvariables` file** if the test creates a record:
+
    ```
    CREATED_MYMODULE_ID=JSON:.id
    ```
+
 5. **Create a `.matches` file** for assertions:
+
    ```
    "id"
    "name"
    WARNING:"my_optional_field"
    ```
+
 6. **Test dependencies are automatic** — if your test uses `${CREATED_ACCOUNT_ID}`, the runner will find and execute `createAccount.curl` first (because its `.setvariables` defines that variable)
 7. **For explicit dependencies** (not variable-based), create a `.dependencies` file:
+
    ```
    createAccount.curl
    createQuote.curl
    ```
+
 8. **For conditional tests**, create a `.conditions` file:
+
    ```bash
    [ "$SUGAR_MAJOR_VERSION" -ge 12 ]
    ```
+
 9. **Use `.config`** for environment-specific behavior:
+
    ```
    SKIP_IN_PRODUCTION=true
    DOMAIN_REGEX1_INCLUDE=localhost
    ```
-
 
 ### 2. PHPUnit Tests (unit/integration)
 
@@ -197,6 +215,7 @@ OPTIONAL;SOME_VAR=JSON:.optional_field
 **Framework**: PHPUnit 11.x on PHP 8.5+
 
 **SugarCRM test patterns**:
+
 - Extend `\PHPUnit\Framework\TestCase` for pure unit tests
 - Use SugarCRM's `SugarTestHelper` when testing with Sugar context (beans, DB, etc.)
 - Use `BeanFactory::getBean()` to create/retrieve test records
@@ -205,11 +224,14 @@ OPTIONAL;SOME_VAR=JSON:.optional_field
 - Test custom logic hooks, API endpoints, schedulers, and business logic
 
 **Naming conventions**:
+
 - File: `<ModuleName><Feature>Test.php` (e.g., `BNS_NF525_TriggersIntegrationTest.php`)
 - Class: matches filename
 - Methods: `test<Behavior>()` with `@testdox` annotations for readable output
+- Config: use `declare(strict_types=1);` for tests
 
 **When creating PHPUnit tests**:
+
 1. Create new test files under `${PROJECTS_PATH}/<project>/custom/tests/unit-php/`
 2. Read the source code being tested first
 3. Look for existing tests in the same directory for style reference
@@ -227,6 +249,7 @@ OPTIONAL;SOME_VAR=JSON:.optional_field
 **Example**: `bns run-batch -vvvv bnsQuoteSendEmail`
 
 **How to find `<batchFunctionName>`**:
+
 1. Open the batch file in the Sugar app, typically under:
    `${PROJECTS_PATH}/<project>/custom/modules/Schedulers/bnsBatchFiles/<file>.php`
 2. Use the PHP function name defined in that file.
@@ -234,6 +257,7 @@ OPTIONAL;SOME_VAR=JSON:.optional_field
    Example function name: `bnsSessionAttestationSendByMail`
 
 **When using run-batch for validation/debugging**:
+
 1. Confirm target batch function and required input data/state
 2. Run with `-vvvv` for maximum verbosity
 3. Review console output and logs for errors and side effects
