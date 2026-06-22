@@ -14,7 +14,7 @@
 		"complex": "github-copilot/gpt-5.4"
 	},
 	"fallback": {
-		"simple": "opencode/minimax-m2.5-free",
+		"simple": "opencode/mimo-v2.5-free",
 		"standard": "opencode/deepseek-v4-flash-free",
 		"complex": "opencode/nemotron-3-super-free"
 	}
