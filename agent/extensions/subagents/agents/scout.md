@@ -4,7 +4,7 @@ description: Fast codebase recon — explores files, finds patterns, maps archit
 tools: read, grep, ast_grep, repo_map, repomix, git_inspect, memory, ctx_search
 mcpTools: github/search_repositories, github/get_file_contents
 skills: delta, context-mode
-model: github-copilot/gpt-5.4-mini
+model: opencode/deepseek-v4-flash-free
 thinking: off
 ---
 
