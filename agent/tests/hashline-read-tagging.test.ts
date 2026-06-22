@@ -18,6 +18,9 @@ const mockPi = {
     if (event === "session_shutdown") sessionShutdownHandler = handler;
     if (event === "tool_result") toolResultHandler = handler;
   },
+  registerTool() {
+    return undefined;
+  },
 };
 
 hashlineInit(mockPi as any);
@@ -141,8 +144,7 @@ describe("hashline read tagging", () => {
       createCtx(tempDir),
     );
 
-    expect(result.systemPrompt).toHaveLength(2);
-    expect(result.systemPrompt[1]).toContain("## Edit Tool: Hashline Mode");
-    expect(result.systemPrompt[1]).toContain("¶path/to/file#XXXX");
+    expect(result.systemPrompt).toContain("## Edit Tool: Hashline Mode");
+    expect(result.systemPrompt).toContain("¶path/to/file#XXXX");
   });
 });

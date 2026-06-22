@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 
 const mockExecute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "mock" }] });
-vi.mock("@mariozechner/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", () => ({
 	createBashTool: () => ({ execute: mockExecute }),
 }));
 

@@ -13,6 +13,7 @@ describe("subagents status badges", () => {
 	beforeEach(() => {
 		registeredTool = undefined;
 		subagentsInit({
+			on() {},
 			registerCommand() {},
 			registerTool(def: any) {
 				registeredTool = def;

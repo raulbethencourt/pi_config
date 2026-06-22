@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // We need to mock createBashTool before importing the module
 const mockExecute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "mock output" }] });
-vi.mock("@mariozechner/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", () => ({
 	createBashTool: () => ({ execute: mockExecute }),
 }));
 

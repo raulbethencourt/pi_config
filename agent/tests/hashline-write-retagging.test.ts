@@ -16,6 +16,9 @@ const mockPi = {
     if (event === "session_shutdown") sessionShutdownHandler = handler;
     if (event === "tool_result") toolResultHandler = handler;
   },
+  registerTool() {
+    return undefined;
+  },
 };
 
 hashlineInit(mockPi as any);

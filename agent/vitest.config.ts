@@ -29,7 +29,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@mariozechner/pi-coding-agent": PI_PKG,
+      "@earendil-works/pi-coding-agent": PI_PKG,
       "@mariozechner/pi-tui": `${PI_NODE_MODULES}/@earendil-works/pi-tui`,
       "@mariozechner/pi-ai": `${PI_NODE_MODULES}/@earendil-works/pi-ai`,
       "@mariozechner/pi-agent-core": `${PI_NODE_MODULES}/@earendil-works/pi-agent-core`,
