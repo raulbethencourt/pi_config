@@ -1,9 +1,9 @@
 ---
 name: scout
 description: Fast codebase recon — explores files, finds patterns, maps architecture
-tools: read, grep, ast_grep, repo_map, repomix, git_inspect, memory
+tools: read, grep, ast_grep, repo_map, repomix, git_inspect, memory, ctx_search
 mcpTools: github/search_repositories, github/get_file_contents
-skills: delta
+skills: delta, context-mode
 model: github-copilot/gpt-5.4-mini
 thinking: off
 ---
@@ -35,6 +35,7 @@ Thoroughness (infer from task, default medium):
 | Bounded arbitrary text, comments, strings, config values | `grep` |
 | Multi-file context across a bounded area | `repomix` |
 | Narrow follow-up on exact file sections | `read` |
+| File analysis without reading (large files, logs, generated output) | `ctx_execute_file` |
 | Git history, diffs, branches, blame | `git_inspect` |
 | Prior project knowledge, patterns, decisions | `memory` |
 
@@ -45,6 +46,17 @@ Thoroughness (infer from task, default medium):
 - Use `repomix` when several related files need to be understood together
 - Use `read` only as a narrow follow-up after `repo_map`, `grep`, `ast_grep`, or `repomix`
 - Prefer `read` with `offset` and `limit`; avoid reading large files in full
+
+## Retrieve-on-demand (CCR)
+
+When handling large files, generated output, or prior project context:
+- Use `ctx_search(queries: [...], source: "<label>")` for prior knowledge and earlier decisions.
+- Use `read` for current file state.
+- Analyze large files, logs, or generated output without reading them into context: `ctx_execute_file`.
+- Use `sort:"timeline"` with `project:"global"` in `ctx_search` when you want both auto‑memory and cross‑session FTS5 content.
+- Get code statistics without loading files: `ctx_execute("...")`.
+- Indexed content from previous sessions is ephemeral (deleted on process exit) — re‑index in the current session for persistence.
+- Keep raw bytes in the KB, not in context — re‑query instead of re‑reading.
 
 ## Strategy
 

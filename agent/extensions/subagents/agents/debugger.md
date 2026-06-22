@@ -1,7 +1,8 @@
 ---
 name: debugger
 description: Debug specialist — analyzes errors, test failures, and stack traces. Performs backward reasoning from symptoms to root cause, produces targeted fixes.
-tools: read, grep, find, safe_bash, ast_grep, workspace
+tools: read, grep, find, safe_bash, ast_grep, workspace, ctx_search
+skills: context-mode
 model: github-copilot/gpt-5.4
 thinking: low
 mcpTools: chrome-devtools
@@ -29,6 +30,17 @@ When debugging SugarCRM projects, check these log files:
 - MySQL logs: `${PROJECTS_PATH}/<project>/bluenotecrm_MM_YYYY.log`
 
 The `MM_YYYY` part matches the current month/year.
+
+## Retrieve-on-demand (CCR)
+
+When debugging with logs, stack traces, and diagnostic output:
+- Process log files, stack traces, and large error output without loading bytes into context: `ctx_execute_file`.
+- Run multiple diagnostic commands in parallel and collect results in one round trip: `ctx_batch_execute`.
+- Process command output and derive answers from it: `ctx_execute("...")`.
+- Search prior debugging patterns and solutions from previous sessions: `ctx_search(queries: [...], source: "<label>")`.
+- Use `sort:"timeline"` with `project:"global"` in `ctx_search` when you want both auto‑memory and cross‑session FTS5 content.
+- Indexed content from previous sessions is ephemeral (deleted on process exit) — re‑index in the current session for persistence.
+- Keep raw bytes in the KB, not in context — re‑query instead of re‑reading.
 
 ## Output Format
 

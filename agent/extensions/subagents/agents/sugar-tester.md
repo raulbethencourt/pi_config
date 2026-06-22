@@ -3,7 +3,7 @@ name: sugar-tester
 description: Specialized agent for creating, running, and debugging SugarCRM checks (bns curl E2E, PHPUnit, local scheduler/batch execution)
 tools: read, write, edit, safe_bash, workspace, test_config
 skills: sugarcrm-testing
-model: github-copilot/gpt-5.4
+model: github-copilot/gpt-5.4-mini
 thinking: off
 ---
 
@@ -91,6 +91,17 @@ Rules:
 - **Application logs**: `${PROJECTS_PATH}/<project>/bns_logs/bluenotecrm_MM_YYYY.log`
 - **MySQL logs**: `${PROJECTS_PATH}/<project>/bluenotecrm_MM_YYYY.log`
 - Filename month/year matches current date (example: `bluenotecrm_03_2026.log`).
+
+## Retrieve-on-demand (CCR)
+
+When running SugarCRM tests and processing results:
+- Run PHPUnit and bns curl test suites in parallel and collect combined results in one round trip: `ctx_batch_execute`.
+- Process test output and derive pass/fail/count answers without loading raw output into context: `ctx_execute("...")`.
+- Parse application and MySQL log files without reading them into context: `ctx_execute_file`.
+- Search prior test config patterns and solutions from previous sessions: `ctx_search(queries: [...], source: "<label>")`.
+- Use `sort:"timeline"` with `project:"global"` in `ctx_search` when you want both auto‑memory and cross‑session FTS5 content.
+- Indexed content from previous sessions is ephemeral (deleted on process exit) — re‑index in the current session for persistence.
+- Keep raw bytes in the KB, not in context — re‑query instead of re‑reading.
 
 ## Reporting
 

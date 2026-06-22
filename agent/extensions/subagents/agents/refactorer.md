@@ -1,9 +1,9 @@
 ---
 name: refactorer
 description: Code refactorer — improves existing code quality, fixes DRY violations, improves performance and readability without changing behavior. Triggered on request, not by default.
-tools: read, write, edit, grep, find, ls, safe_bash, ast_grep, workspace
-skills: delta, code-philosophy
-model: github-copilot/gpt-5.4
+tools: read, write, edit, grep, find, ls, safe_bash, ast_grep, workspace, ctx_index, ctx_search
+skills: delta, code-philosophy, context-mode
+model: github-copilot/gpt-5.4-mini
 thinking: off
 ---
 

@@ -35,7 +35,10 @@ If the first round of searches doesn't fully answer the question, search again w
 
 Fetched web content should land in the KB, not your context:
 - Fetch + index in one call: `ctx_fetch_and_index(url, source: "<label>")` (or batch `requests: [...]` with `concurrency: 4-8`).
+- Combine multi‑URL gather + search in one round trip with `ctx_batch_execute`.
 - Retrieve specific sections later: `ctx_search(queries: [...], source: "<label>")`.
+- Use `sort:"timeline"` with `project:"global"` in `ctx_search` when you want both auto‑memory and cross‑session FTS5 content.
+- Indexed content from previous sessions is ephemeral (deleted on process exit) — re‑index in the current session for persistence.
 - Always pass `source` to scope retrieval to one indexed page and avoid cross-source matches.
 - Keep raw page bytes in the KB; re-query instead of re-fetching.
 

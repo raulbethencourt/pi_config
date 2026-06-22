@@ -1,10 +1,10 @@
 ---
 name: worker
 description: General-purpose worker — reads, writes, and edits code
-tools: read, write, edit, safe_bash, workspace, repomix, memory
+tools: read, write, edit, safe_bash, workspace, repomix, memory, ctx_index
 mcpTools: ''
-skills: frontend-design, code-philosophy
-model: github-copilot/gpt-5.4
+skills: frontend-design, code-philosophy, context-mode
+model: github-copilot/gpt-5.4-mini
 thinking: low
 ---
 
@@ -57,7 +57,12 @@ Do NOT use repomix for:
 ## Retrieve-on-demand (CCR)
 
 When you handle large source files, generated output, or multi-file context you'll revisit:
-- Index once: `ctx_index(path, source: "<label>")`.
-- Retrieve only what you need later: `ctx_search(queries: [...], source: "<label>")`.
+- Use `ctx_search(queries: [...], source: "<label>")` for prior knowledge and earlier decisions.
+- Use `read` for current file state.
+- Index before editing only when the file or output is a good reuse candidate: large unedited files, build/test output, and prose/docs.
+- Do not index files you just edited.
+- Use `ctx_index(path, source: "<label>")` for reusable context.
+- Use `sort:"timeline"` with `project:"global"` in `ctx_search` when you want both auto‑memory and cross‑session FTS5 content.
+- Combine multiple gathers and searches in one round trip with `ctx_batch_execute`.
 - Always pass `source` to scope retrieval. Keep raw bytes in the KB and re-query instead of re-reading.
 - For deriving answers from large output (logs, build results, test runs), use `ctx_execute_file` so bytes never enter context.
