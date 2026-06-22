@@ -30,6 +30,7 @@ explicit user confirmation
 - Prefer editing existing files over creating new ones
 - Prefer concise responses; skip unnecessary explanations unless asked
 - When unsure about intent, ask before acting
+- When writing or suggesting git commit messages, use conventional commits in the form "type(scope): summary"; examples: "fix(ui): ..." and "feat(subagents): ...".
 - **In non-interactive or background execution contexts** (e.g., async agents, automated pipelines):
   do NOT block waiting for input. Instead, choose the most conservative/minimal valid interpretation,
   log the ambiguity as a structured JSON-lines entry to stderr, and continue. Surface the ambiguity
