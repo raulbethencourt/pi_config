@@ -4,7 +4,7 @@ description: Debug specialist — analyzes errors, test failures, and stack trac
 tools: read, grep, find, safe_bash, ast_grep, workspace, ctx_search
 skills: context-mode
 model: github-copilot/gpt-5.4
-thinking: low
+thinking: medium
 mcpTools: chrome-devtools
 ---
 
