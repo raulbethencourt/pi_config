@@ -58,7 +58,17 @@ export default function (pi: ExtensionAPI) {
                 `).get(...where.params);
 
                 if (!summary || Number(summary.runs) === 0) {
-                    lines.push(`  ${dim("No telemetry data for selected period")}`);
+                    const allTimeRuns = db.prepare(`
+                        SELECT COUNT(*) AS runs
+                        FROM runs
+                    `).get();
+
+                    if (allTimeRuns && Number(allTimeRuns.runs) > 0 && period !== "all") {
+                        lines.push(`  ${dim("No telemetry data for selected period")}`);
+                        lines.push(`  ${dim("Try /token_stats all to view historical telemetry")}`);
+                    } else {
+                        lines.push(`  ${dim("No telemetry data for selected period")}`);
+                    }
                     return showScrollableUi(ctx, lines);
                 }
 

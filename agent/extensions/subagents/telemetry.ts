@@ -12,6 +12,11 @@ const DB_PATH = path.join(DB_DIR, "analytics.db");
 let db: any = null;
 let initAttempted = false;
 
+function reportTelemetryError(context: string, err: unknown): void {
+	const message = err instanceof Error ? err.message : String(err);
+	console.error(`[telemetry] ${context}: ${message}`);
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,6 +51,19 @@ CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool);
 `;
 
+function migrateRunsTableSchema(database: any): void {
+	const cols = database.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
+	const names = new Set(cols.map((col) => col.name));
+
+	if (!names.has("used_fallback")) {
+		database.exec("ALTER TABLE runs ADD COLUMN used_fallback INTEGER DEFAULT 0");
+	}
+
+	if (!names.has("fallback_model")) {
+		database.exec("ALTER TABLE runs ADD COLUMN fallback_model TEXT");
+	}
+}
+
 export function initTelemetryDb(): void {
 	if (initAttempted) return;
 	initAttempted = true;
@@ -55,8 +73,10 @@ export function initTelemetryDb(): void {
 		db = new DatabaseSync(DB_PATH);
 		db.exec("PRAGMA journal_mode=WAL;");
 		db.exec(SCHEMA);
+		migrateRunsTableSchema(db);
 	} catch (err: any) {
 		// Graceful degradation — telemetry is optional
+		reportTelemetryError("failed to initialize telemetry database", err);
 		db = null;
 	}
 }
@@ -100,7 +120,8 @@ export function logRun(
 		);
 		const row = db.prepare("SELECT last_insert_rowid() as id").get();
 		return row?.id ?? null;
-	} catch {
+	} catch (err) {
+		reportTelemetryError("failed to write run telemetry", err);
 		// Never crash the orchestrator for telemetry
 		return null;
 	}
@@ -121,7 +142,8 @@ export function logToolCalls(
 		for (const tc of toolCalls) {
 			stmt.run(runId, tc.tool, tc.count);
 		}
-	} catch {
+	} catch (err) {
+		reportTelemetryError("failed to write tool-call telemetry", err);
 		// Never crash for telemetry
 	}
 }
