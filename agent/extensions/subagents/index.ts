@@ -1074,7 +1074,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const w = getTermWidth() - 4;
-			const expanded = options.expanded;
+			const expanded = options.expanded ?? true;
 			const c = new Container();
 
 			if (details.mode === "parallel") {
