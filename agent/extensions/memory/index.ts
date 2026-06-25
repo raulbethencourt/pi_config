@@ -192,8 +192,8 @@ export default function memory(pi: ExtensionAPI) {
         },
     });
 
-    pi.on("before_agent_start", async (event, _ctx) => {
-        const cwd = process.cwd();
+    pi.on("before_agent_start", async (event, ctx) => {
+        const cwd = ctx?.cwd || process.cwd();
         const filePath = getMemoryFile(cwd);
         try {
             const content = fs.readFileSync(filePath, "utf-8");
