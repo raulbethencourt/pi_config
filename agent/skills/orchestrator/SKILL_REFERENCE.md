@@ -105,9 +105,22 @@ If any of those are fuzzy, you're not ready to implement.
 **When**: Non-trivial code change that requires design decisions.
 **Flow**: planner → orchestrator reviews plan → test suitability assessment → sugar-tester (for SugarCRM) or tester (non-Sugar) for RED first if suitable, otherwise explicit legacy bypass → worker (GREEN: make tests pass, or smallest safe change under bypass) → sugar-tester (for SugarCRM) or tester (non-Sugar) to verify GREEN when tests exist
 
+### Legacy Refactor Pipeline
+**When**: Structural legacy-code refactoring where current behavior must be preserved and normal desired-behavior TDD is the wrong frame.
+**Flow**: scout → testability assessment by sugar-tester (for SugarCRM) or tester (non-Sugar) → characterization tests reach GREEN baseline → refactorer makes one small change → sugar-tester (for SugarCRM) or tester (non-Sugar) re-runs characterization baseline → repeat while GREEN
+
+**Protocol:**
+1. Use this pipeline for restructuring legacy code, not for adding new behavior.
+2. The test agent writes characterization tests for observed behavior, including quirks that callers may rely on.
+3. No refactorer dispatch occurs until the characterization baseline is GREEN.
+4. After each refactor step, re-run the same baseline immediately.
+5. If a refactor step turns the baseline RED, stop the pipeline, return to the last known green state, and reassess. This is a stop condition, not a normal RED → worker/refactorer retry loop.
+6. If meaningful characterization is not practical, use the Legacy Code Exemption path: confirm bypass when interactive, otherwise log the reason and proceed with the smallest safe change only.
+7. Prefer worker, not refactorer, for minimal-change exemption work unless the change remains strictly structural.
+
 ### TDD Loop (Default Development Flow)
 
-**When**: Any feature or bug fix that changes source logic (default unless user bypasses or legacy exemption applies).
+**When**: Any feature or bug fix that changes source logic (default unless user bypasses or legacy exemption applies). Use the Legacy Refactor Pipeline instead when the task is behavior-preserving restructuring of legacy code.
 **Agent selection**:
 - SugarCRM/SuiteCRM project (`sugar_version.php` exists at the project root; fallback signal: `bns` tools) → **sugar-tester**
 - Do not classify a project as Sugar from `custom/` alone.

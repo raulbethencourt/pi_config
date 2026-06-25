@@ -72,6 +72,7 @@ Example: `subagent({ tasks: [{ agent: "scout", task: "..." }, { agent: "research
 | API docs, library behavior, migration guides, external knowledge | researcher |
 | Create/edit/delete files, run commands, install packages | worker |
 | Non-trivial code change requiring design decisions | planner → worker |
+| Legacy behavior-preserving structural refactor | tester/sugar-tester → refactorer |
 | SugarCRM tests (PHPUnit, bns curl, bns run-batch) | sugar-tester |
 | Non-Sugar test creation/validation | tester |
 | Review git diff, validate code quality | codereviewer |
@@ -98,7 +99,7 @@ For pipeline details (Planner→Critic→Worker, TDD loop, escalation protocols)
 
 ## TDD (Default Development Flow)
 
-**Scope**: Features and bug fixes that change source logic use TDD by default.
+**Scope**: Features and bug fixes that change source logic use TDD by default. Legacy behavior-preserving refactors use characterization tests first and route through refactorer instead of normal desired-behavior RED-first TDD.
 
 **Step 0 — Test Suitability Assessment**:
 - Detect existing test infrastructure/config first.
