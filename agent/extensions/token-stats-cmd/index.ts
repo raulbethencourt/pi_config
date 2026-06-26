@@ -1,8 +1,28 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { matchesKey, Key, truncateToWidth } from "@mariozechner/pi-tui";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+
+const Key = {
+    escape: "escape",
+    up: "up",
+    down: "down",
+    pageUp: "pageup",
+    pageDown: "pagedown",
+    home: "home",
+    end: "end",
+};
+
+function matchesKey(data: string, key: string): boolean {
+    return data === key || data === key.toUpperCase();
+}
+
+function truncateToWidth(text: string, width: number): string {
+    if (width <= 0) return "";
+    if (text.length <= width) return text;
+    if (width === 1) return text.slice(0, 1);
+    return text.slice(0, width - 1) + "…";
+}
 
 const DB_PATH = path.join(os.homedir(), ".pi", "data", "analytics.db");
 
@@ -64,8 +84,17 @@ export default function (pi: ExtensionAPI) {
                     `).get();
 
                     if (allTimeRuns && Number(allTimeRuns.runs) > 0 && period !== "all") {
+                        const latestDayRow = db.prepare(`
+                            SELECT date(timestamp, 'utc') AS day
+                            FROM runs
+                            ORDER BY timestamp DESC
+                            LIMIT 1
+                        `).get() as { day?: string } | undefined;
                         lines.push(`  ${dim("No telemetry data for selected period")}`);
                         lines.push(`  ${dim("Try /token_stats all to view historical telemetry")}`);
+                        if (latestDayRow?.day) {
+                            lines.push(`  ${dim(`Latest UTC day: ${latestDayRow.day}`)}`);
+                        }
                     } else {
                         lines.push(`  ${dim("No telemetry data for selected period")}`);
                     }
@@ -111,15 +140,34 @@ export default function (pi: ExtensionAPI) {
                     ORDER BY cost DESC
                 `).all(...where.params);
 
+                const runColumns = new Set((db.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>).map((col) => col.name));
+                const providerExpr = runColumns.has("provider")
+                    ? "COALESCE(NULLIF(TRIM(provider), ''), CASE WHEN agent = '__main__' THEN 'orchestrator' WHEN instr(COALESCE(model, ''), '/') > 0 THEN substr(model, 1, instr(model, '/') - 1) WHEN NULLIF(TRIM(model), '') IS NOT NULL THEN TRIM(model) END, 'unknown')"
+                    : "COALESCE(CASE WHEN agent = '__main__' THEN 'orchestrator' WHEN instr(COALESCE(model, ''), '/') > 0 THEN substr(model, 1, instr(model, '/') - 1) WHEN NULLIF(TRIM(model), '') IS NOT NULL THEN TRIM(model) END, 'unknown')";
+
                 const byDayRaw = db.prepare(`
                     SELECT
-                        date(timestamp) AS day,
+                        date(timestamp, 'utc') AS day,
                         COUNT(*) AS runs,
                         COALESCE(SUM(cost_usd), 0) AS cost
                     FROM runs
                     ${where.sql}
-                    GROUP BY date(timestamp)
+                    GROUP BY date(timestamp, 'utc')
                     ORDER BY day ASC
+                `).all(...where.params);
+
+                const byProvider = db.prepare(`
+                    SELECT
+                        ${providerExpr} AS provider,
+                        COUNT(*) AS runs,
+                        COALESCE(SUM(cost_usd), 0) AS cost,
+                        COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
+                        COALESCE(AVG(duration_ms), 0) AS avg_duration,
+                        SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) AS success_pct
+                    FROM runs
+                    ${where.sql}
+                    GROUP BY ${providerExpr}
+                    ORDER BY cost DESC
                 `).all(...where.params);
 
                 const top5 = db.prepare(`
@@ -134,6 +182,8 @@ export default function (pi: ExtensionAPI) {
                     ORDER BY cost DESC
                     LIMIT 5
                 `).all(...where.params);
+                const dayPreview = normalizeDays(byDayRaw, period)[0]?.day;
+                const projectPreview = basenameOrUnknown(String(byProjectRaw[0]?.cwd || ""));
 
                 // Summary
                 lines.push(heading("  Summary"));
@@ -144,6 +194,8 @@ export default function (pi: ExtensionAPI) {
                 lines.push(`  ${label("Cache savings:")}   ${value(formatTokens(Number(summary.cache_savings)))}`);
                 lines.push(`  ${label("Success rate:")}    ${success(`${Number(summary.success_pct).toFixed(1)}%`)}`);
                 lines.push(`  ${label("Avg duration:")}    ${value(formatDuration(Number(summary.avg_duration)))}`);
+                if (dayPreview) lines.push(`  ${dim(`Day preview: ${dayPreview}`)}`);
+                if (projectPreview) lines.push(`  ${dim(`Project preview: ${projectPreview}`)}`);
                 lines.push("");
 
                 // By Agent
@@ -153,19 +205,7 @@ export default function (pi: ExtensionAPI) {
                 lines.push(`  ${dim("─".repeat(62))}`);
                 for (const row of byAgent) {
                     lines.push(
-                        `  ${value(padRight(String(row.agent || "unknown"), 16))} ${value(padLeft(String(row.runs), 5))} ${value(padLeft(formatCost(Number(row.cost)), 10))} ${value(padLeft(formatTokens(Number(row.tokens)), 10))} ${value(padLeft(formatDuration(Number(row.avg_duration)), 7))} ${success(padLeft(`${Number(row.success_pct).toFixed(0)}%`, 8))}`,
-                    );
-                }
-                lines.push("");
-
-                // By Model
-                lines.push(heading("  By Model"));
-                lines.push("");
-                lines.push(`  ${label(padRight("Model", 22))} ${label(padLeft("Runs", 5))} ${label(padLeft("Cost", 10))} ${label(padLeft("Tokens", 10))} ${label(padLeft("Avg", 7))} ${label(padLeft("Success", 8))}`);
-                lines.push(`  ${dim("─".repeat(68))}`);
-                for (const row of byModel) {
-                    lines.push(
-                        `  ${value(padRight(String(row.model || "unknown"), 22))} ${value(padLeft(String(row.runs), 5))} ${value(padLeft(formatCost(Number(row.cost)), 10))} ${value(padLeft(formatTokens(Number(row.tokens)), 10))} ${value(padLeft(formatDuration(Number(row.avg_duration)), 7))} ${success(padLeft(`${Number(row.success_pct).toFixed(0)}%`, 8))}`,
+                        `  ${value(padRight(renderAgentLabel(String(row.agent || "unknown")), 16))} ${value(padLeft(String(row.runs), 5))} ${value(padLeft(formatCost(Number(row.cost)), 10))} ${value(padLeft(formatTokens(Number(row.tokens)), 10))} ${value(padLeft(formatDuration(Number(row.avg_duration)), 7))} ${success(padLeft(`${Number(row.success_pct).toFixed(0)}%`, 8))}`,
                     );
                 }
                 lines.push("");
@@ -179,6 +219,30 @@ export default function (pi: ExtensionAPI) {
                     const cost = Number(day.cost);
                     const bar = makeBar(cost, maxDailyCost, 24);
                     lines.push(`  ${value(day.day)}  ${theme.fg("accent", bar)} ${value(padLeft(formatCost(cost), 9))} ${dim(`(${day.runs} runs)`)}`);
+                }
+                lines.push("");
+
+                // By Provider
+                lines.push(heading("  By Provider"));
+                lines.push("");
+                lines.push(`  ${label(padRight("provider", 18))} ${label(padLeft("Runs", 5))} ${label(padLeft("Cost", 10))} ${label(padLeft("Tokens", 10))} ${label(padLeft("Avg", 7))} ${label(padLeft("Success", 8))}`);
+                lines.push(`  ${dim("─".repeat(66))}`);
+                for (const row of byProvider) {
+                    lines.push(
+                        `  ${value(padRight(String(row.provider || "unknown"), 18))} ${value(padLeft(String(row.runs), 5))} ${value(padLeft(formatCost(Number(row.cost)), 10))} ${value(padLeft(formatTokens(Number(row.tokens)), 10))} ${value(padLeft(formatDuration(Number(row.avg_duration)), 7))} ${success(padLeft(`${Number(row.success_pct).toFixed(0)}%`, 8))}`,
+                    );
+                }
+                lines.push("");
+
+                // By Model
+                lines.push(heading("  By Model"));
+                lines.push("");
+                lines.push(`  ${label(padRight("Model", 22))} ${label(padLeft("Runs", 5))} ${label(padLeft("Cost", 10))} ${label(padLeft("Tokens", 10))} ${label(padLeft("Avg", 7))} ${label(padLeft("Success", 8))}`);
+                lines.push(`  ${dim("─".repeat(68))}`);
+                for (const row of byModel) {
+                    lines.push(
+                        `  ${value(padRight(String(row.model || "unknown"), 22))} ${value(padLeft(String(row.runs), 5))} ${value(padLeft(formatCost(Number(row.cost)), 10))} ${value(padLeft(formatTokens(Number(row.tokens)), 10))} ${value(padLeft(formatDuration(Number(row.avg_duration)), 7))} ${success(padLeft(`${Number(row.success_pct).toFixed(0)}%`, 8))}`,
+                    );
                 }
                 lines.push("");
 
@@ -312,12 +376,17 @@ function buildWhere(period: Period): { sql: string; params: any[] } {
     if (period === "all") return { sql: "", params: [] };
     const now = new Date();
     let since: Date;
+    let until: Date | null = null;
     if (period === "today") {
-        since = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        until = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
     } else if (period === "month") {
-        since = new Date(now.getFullYear(), now.getMonth(), 1);
+        since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
     } else {
         since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    }
+    if (until) {
+        return { sql: "WHERE timestamp >= ? AND timestamp < ?", params: [since.toISOString(), until.toISOString()] };
     }
     return { sql: "WHERE timestamp >= ?", params: [since.toISOString()] };
 }
@@ -329,26 +398,22 @@ function normalizeDays(rows: any[], period: Period): Array<{ day: string; runs: 
         map.set(day, { day, runs: Number(row.runs || 0), cost: Number(row.cost || 0) });
     }
 
-    if (period === "all") {
+    if (period === "all" || period === "today") {
         return [...map.values()].sort((a, b) => a.day.localeCompare(b.day));
     }
 
     const now = new Date();
     const days: string[] = [];
 
-    if (period === "today") {
-        days.push(toDateKey(now));
-    } else if (period === "week") {
+    if (period === "week") {
         for (let i = 6; i >= 0; i--) {
-            const d = new Date(now);
-            d.setDate(now.getDate() - i);
-            days.push(toDateKey(d));
+            days.push(toDateKey(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i))));
         }
     } else {
-        const d = new Date(now.getFullYear(), now.getMonth(), 1);
+        let d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
         while (d <= now) {
             days.push(toDateKey(d));
-            d.setDate(d.getDate() + 1);
+            d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1));
         }
     }
 
@@ -405,4 +470,8 @@ function basenameOrUnknown(cwd: string): string {
     const base = path.basename(cwd);
     if (base && base !== path.sep) return base;
     return cwd === path.sep ? path.sep : "unknown";
+}
+
+function renderAgentLabel(agent: string): string {
+    return agent === "__main__" ? "orchestrator" : agent;
 }

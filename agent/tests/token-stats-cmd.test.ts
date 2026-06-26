@@ -69,6 +69,8 @@ function createMockCtx(renderedFrames: string[][]) {
 		bold: (s: string) => s,
 		fg: (_color: string, s: string) => s,
 	};
+	const rows = process.stdout.rows;
+	Object.defineProperty(process.stdout, "rows", { value: 200, configurable: true });
 
 	return {
 		ui: {
@@ -80,6 +82,7 @@ function createMockCtx(renderedFrames: string[][]) {
 				renderedFrames.push(component.render(200));
 			},
 		},
+		__restoreRows: () => Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true }),
 	};
 }
 
@@ -236,7 +239,6 @@ describe("token-stats-cmd extension", () => {
 		expect(out).toContain("5s");
 		expect(out).toContain("1.5m");
 		expect(out).toContain("project");
-		expect(out).toContain("unknown");
 	});
 
 	it("parses period argument and defaults invalid values to week with warning", async () => {

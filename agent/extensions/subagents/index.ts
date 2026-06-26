@@ -103,6 +103,21 @@ function loadConfig(): ExtensionConfig {
 	return {};
 }
 
+function runtimeModelToString(model: any): string | undefined {
+	if (!model) return undefined;
+	if (typeof model === "string") return model;
+	const provider = typeof model.provider === "string" ? model.provider.trim() : "";
+	const id = typeof model.id === "string" ? model.id.trim() : "";
+	if (provider && id) return `${provider}/${id}`;
+	return provider || id || undefined;
+}
+
+function runtimeProvider(model: any): string | undefined {
+	const value = runtimeModelToString(model);
+	if (!value) return undefined;
+	return value.split("/")[0] || undefined;
+}
+
 // Built-in tools that pi provides natively (no extension needed)
 const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls", "rg"]);
 
@@ -863,11 +878,55 @@ export default function (pi: ExtensionAPI) {
 	agents = loadAgents();
 	initTelemetryDb();
 	const sessionId = `${process.pid}-${Date.now()}`;
+	const currentDepth = (() => {
+		const depth = Number(process.env.PI_SUBAGENT_DEPTH ?? "0");
+		return Number.isFinite(depth) ? depth : 0;
+	})();
+	const mainSessionUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+	let mainSessionModel: string | undefined;
+	let mainSessionTask: string | undefined;
+	let mainSessionDurationMs = 0;
 
 	pi.on("before_agent_start", async (event: { systemPrompt: string }) => {
-		const depth = Number(process.env.PI_SUBAGENT_DEPTH ?? "0");
-		const safeDepth = Number.isFinite(depth) ? depth : 0;
-		return stripChildPromptHook(event, safeDepth);
+		return stripChildPromptHook(event, currentDepth);
+	});
+
+	pi.on("message_end", (event: any) => {
+		if (currentDepth !== 0) return;
+		if (event?.message?.role !== "assistant") return;
+		const usage = event?.message?.usage;
+		if (!usage) return;
+		mainSessionUsage.input += usage.input || 0;
+		mainSessionUsage.output += usage.output || 0;
+		mainSessionUsage.cacheRead += usage.cacheRead || 0;
+		mainSessionUsage.cacheWrite += usage.cacheWrite || 0;
+		mainSessionUsage.cost += usage.cost?.total || 0;
+		mainSessionUsage.turns += 1;
+		if (event?.message?.model) mainSessionModel = runtimeModelToString(event.message.model) ?? mainSessionModel;
+		if (typeof event?.message?.task === "string" && !mainSessionTask) mainSessionTask = event.message.task;
+		if (typeof event?.durationMs === "number") mainSessionDurationMs = event.durationMs;
+	});
+
+	pi.on("agent_end", (event: any, ctx: any) => {
+		if (currentDepth !== 0) return;
+		const eventUsage = event?.usage ?? event?.deltaUsage ?? event?.modelUsage;
+		const usage = eventUsage && (eventUsage.input || eventUsage.output || eventUsage.cacheRead || eventUsage.cacheWrite || eventUsage.cost || eventUsage.turns)
+			? eventUsage
+			: mainSessionUsage;
+		logRun(
+			{
+				agent: "__main__",
+				task: event?.task ?? mainSessionTask ?? "main agent",
+				exitCode: event?.exitCode ?? 0,
+				model: runtimeModelToString(ctx?.model) ?? mainSessionModel,
+				usage,
+				progress: { durationMs: event?.durationMs ?? mainSessionDurationMs },
+			},
+			ctx?.cwd ?? process.cwd(),
+			sessionId,
+			0,
+			1,
+		);
 	});
 
 	// Block misrouted Sugar test work before the subagent tool executes.
@@ -976,7 +1035,7 @@ export default function (pi: ExtensionAPI) {
 					// Update allResults with the completed result so the UI reflects it immediately
 					allResults[idx] = result;
 					flushParallelUpdate();
-					const runId = logRun(result, t.cwd ?? cwd, sessionId);
+					const runId = logRun(result, t.cwd ?? cwd, sessionId, currentDepth + 1, 0);
 					const toolMap = new Map<string, number>();
 					for (const t of result.progress.recentTools) {
 						toolMap.set(t.tool, (toolMap.get(t.tool) || 0) + 1);
@@ -1023,7 +1082,7 @@ export default function (pi: ExtensionAPI) {
 						details: { mode: "single" as const, results: [liveResult] },
 					});
 				});
-				const runId = logRun(result, params.cwd ?? cwd, sessionId);
+				const runId = logRun(result, params.cwd ?? cwd, sessionId, currentDepth + 1, 0);
 				const toolMap = new Map<string, number>();
 				for (const t of result.progress.recentTools) {
 					toolMap.set(t.tool, (toolMap.get(t.tool) || 0) + 1);
