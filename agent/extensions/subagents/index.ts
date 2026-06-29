@@ -36,6 +36,7 @@ export interface AgentConfig {
 	mcpTools?: string;
 	skills: string[];
 	model: string;
+	provider?: string;
 	thinking?: string;
 	systemPrompt: string;
 	filePath: string;
@@ -68,6 +69,7 @@ export interface AgentResult {
 	exitCode: number;
 	progress: AgentProgress;
 	model?: string;
+	provider?: string | null;
 	usedFallback?: boolean;
 	transcriptPath?: string;
 	usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number };
@@ -115,7 +117,16 @@ function runtimeModelToString(model: any): string | undefined {
 function runtimeProvider(model: any): string | undefined {
 	const value = runtimeModelToString(model);
 	if (!value) return undefined;
-	return value.split("/")[0] || undefined;
+	const provider = value.split("/")[0] || undefined;
+	if (!provider) return undefined;
+	if (value.includes("/")) return provider;
+	return classifyFlatRuntimeProvider(value);
+}
+
+function classifyFlatRuntimeProvider(modelId: string): string {
+	const normalized = modelId.trim().toLowerCase();
+	if (normalized.includes("deepseek") || normalized.includes("nemotron")) return "opencode";
+	return "github";
 }
 
 // Built-in tools that pi provides natively (no extension needed)
@@ -311,6 +322,7 @@ function loadAgents(): AgentConfig[] {
 			mcpTools,
 			skills,
 			model: frontmatter.model || "anthropic/claude-sonnet-4-6",
+			provider: frontmatter.provider || undefined,
 			thinking: frontmatter.thinking,
 			systemPrompt: body,
 			filePath,
@@ -568,6 +580,7 @@ async function runSubagent(
 		output: "",
 		exitCode: 0,
 		model: routedModel,
+		provider: agent.provider ?? undefined,
 		usedFallback: initialUsedFallback,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 		progress: {
@@ -922,6 +935,7 @@ export default function (pi: ExtensionAPI) {
 				task: event?.task ?? mainSessionTask ?? "main agent",
 				exitCode: event?.exitCode ?? 0,
 				model: runtimeModelToString(ctx?.model) ?? mainSessionModel,
+				provider: runtimeProvider(ctx?.model),
 				usage,
 				progress: { durationMs: event?.durationMs ?? mainSessionDurationMs },
 			},
@@ -1074,6 +1088,7 @@ export default function (pi: ExtensionAPI) {
 					output: "",
 					exitCode: -1,
 					model: agent.model,
+					provider: agent.provider ?? undefined,
 					usedFallback: false,
 					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 					progress: { agent: params.agent!, status: "running" as const, task: params.task!, recentTools: [], toolCount: 0, tokens: 0, durationMs: 0, lastMessage: "" },

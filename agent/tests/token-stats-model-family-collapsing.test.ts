@@ -48,10 +48,7 @@ async function loadTokenStatsHandler() {
 	vi.resetModules();
 	vi.doMock("node:os", async () => {
 		const actual = await vi.importActual<typeof import("node:os")>("node:os");
-		return {
-			...actual,
-			homedir: () => tempHome,
-		};
+		return { ...actual, homedir: () => tempHome };
 	});
 
 	let handler: ((args: string, ctx: any) => Promise<void>) | null = null;
@@ -131,9 +128,9 @@ async function createAnalyticsDb(rows: RunRow[]) {
 	db.close();
 }
 
-describe("token-stats orchestrator usage/cost extraction", () => {
+describe("token-stats model family collapsing", () => {
 	beforeEach(() => {
-		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "token-stats-orchestrator-"));
+		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "token-stats-model-family-"));
 	});
 
 	afterEach(() => {
@@ -144,22 +141,12 @@ describe("token-stats orchestrator usage/cost extraction", () => {
 		}
 	});
 
-	it("shows orchestrator usage and cost when the main agent has telemetry but no provider field", async () => {
+	it("uses provider prefixes dynamically in By Provider when provider is missing", async () => {
 		await createAnalyticsDb([
-			{
-				timestamp: new Date().toISOString(),
-				session_id: "orchestrator-run",
-				agent: "__main__",
-				model: null,
-				provider: null,
-				input_tokens: 1200,
-				output_tokens: 300,
-				cost_usd: 0.42,
-				duration_ms: 2500,
-				exit_code: 0,
-				cwd: "/home/user/project",
-				task_summary: "orchestrate repo scan",
-			},
+			{ timestamp: new Date().toISOString(), session_id: "r1", agent: "planner", provider: null, model: "github-copilot/gpt-5.4", cost_usd: 0.1 },
+			{ timestamp: new Date().toISOString(), session_id: "r2", agent: "planner", provider: null, model: "github-copilot/claude-sonnet-4.6", cost_usd: 0.2 },
+			{ timestamp: new Date().toISOString(), session_id: "r3", agent: "planner", provider: null, model: "opencode/deepseek-v4", cost_usd: 0.3 },
+			{ timestamp: new Date().toISOString(), session_id: "r4", agent: "planner", provider: null, model: "acme/deepseek-v4-flash-free", cost_usd: 0.4 },
 		]);
 
 		const handler = await loadTokenStatsHandler();
@@ -167,9 +154,28 @@ describe("token-stats orchestrator usage/cost extraction", () => {
 		await handler("all", createMockCtx(rendered));
 		const out = getRenderedText(rendered);
 
-		expect(out).toContain("$0.4200");
-		expect(out).toContain("1.5K");
-		expect(out).toContain("By Provider");
-		expect(out).toMatch(/By Provider[\s\S]*unknown\s+1\s+\$0\.4200/);
+		expect(out).toMatch(/By Provider[\s\S]*github\s+2\s+\$0\.3000/);
+		expect(out).toMatch(/By Provider[\s\S]*opencode\s+1\s+\$0\.3000/);
+		expect(out).toMatch(/By Provider[\s\S]*acme\s+1\s+\$0\.4000/);
+		expect(out).not.toMatch(/By Provider[\s\S]*github-copilot\s+\d+/);
+	});
+
+	it("treats equivalent model names as one model in By Model", async () => {
+		await createAnalyticsDb([
+			{ timestamp: new Date().toISOString(), session_id: "m1", agent: "planner", provider: "github", model: "github-copilot/gpt-5.4", cost_usd: 0.1 },
+			{ timestamp: new Date().toISOString(), session_id: "m2", agent: "planner", provider: "github", model: "gpt-5.4", cost_usd: 0.2 },
+			{ timestamp: new Date().toISOString(), session_id: "m3", agent: "planner", provider: "opencode", model: "opencode/deepseek-v4", cost_usd: 0.3 },
+			{ timestamp: new Date().toISOString(), session_id: "m4", agent: "planner", provider: "opencode", model: "deepseek-v4-flash-free", cost_usd: 0.4 },
+		]);
+
+		const handler = await loadTokenStatsHandler();
+		const rendered: string[][] = [];
+		await handler("all", createMockCtx(rendered));
+		const out = getRenderedText(rendered);
+
+		expect(out).toMatch(/By Model[\s\S]*gpt-5\.4\s+2\s+\$0\.3000/);
+		expect(out).toMatch(/By Model[\s\S]*deepseek-v4-flash-free\s+2\s+\$0\.7000/);
+		expect(out).not.toMatch(/By Model[\s\S]*github-copilot\/gpt-5\.4\s+/);
+		expect(out).not.toMatch(/By Model[\s\S]*opencode\/deepseek-v4\s+/);
 	});
 });

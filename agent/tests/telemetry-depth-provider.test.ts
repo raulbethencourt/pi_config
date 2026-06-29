@@ -281,7 +281,7 @@ describe("telemetry depth/main_agent/provider storage", () => {
 		const telemetry = await loadTelemetry();
 		telemetry.initTelemetryDb();
 		telemetry.logRun(
-			makeRun({ agent: "__main__" }),
+			makeRun({ agent: "__main__", provider: "github" }),
 			"/tmp/project",
 			"session-mainagent-1",
 			0,
@@ -290,12 +290,13 @@ describe("telemetry depth/main_agent/provider storage", () => {
 
 		const db = telemetry.getDb();
 		const row = db
-			.prepare("SELECT agent, main_agent, depth FROM runs WHERE session_id = ?")
-			.get("session-mainagent-1") as { agent: string; main_agent: number; depth: number };
+			.prepare("SELECT agent, main_agent, depth, provider FROM runs WHERE session_id = ?")
+			.get("session-mainagent-1") as { agent: string; main_agent: number; depth: number; provider: string | null };
 		expect(row).not.toBeNull();
 		expect(row.agent).toBe("__main__");
 		expect(row.main_agent).toBe(1);
 		expect(row.depth).toBe(0);
+		expect(row.provider).toBe("github");
 	});
 
 	// ── provider derivation ─────────────────────────────────────────
@@ -334,9 +335,7 @@ describe("telemetry depth/main_agent/provider storage", () => {
 		expect(row.provider).toBe("openai");
 	});
 
-	it("stores the model string itself as provider when model has no slash prefix", async () => {
-		// deriveProvider splits on '/' and returns the first segment.
-		// For "gpt-4" there is no slash, so split gives ["gpt-4"], provider = "gpt-4".
+	it("stores null provider when model has no slash prefix", async () => {
 		const telemetry = await loadTelemetry();
 		telemetry.initTelemetryDb();
 		telemetry.logRun(
@@ -350,8 +349,42 @@ describe("telemetry depth/main_agent/provider storage", () => {
 			.prepare("SELECT provider FROM runs WHERE session_id = ?")
 			.get("session-provider-noslash") as { provider: string | null };
 		expect(row).not.toBeNull();
-		// No slash → provider equals the full model string
-		expect(row.provider).toBe("gpt-4");
+		expect(row.provider).toBeNull();
+	});
+
+	it("prefers explicit provider over model parsing", async () => {
+		const telemetry = await loadTelemetry();
+		telemetry.initTelemetryDb();
+		telemetry.logRun(
+			makeRun({ model: "gpt-4", provider: "github" }),
+			"/tmp/project",
+			"session-provider-explicit",
+		);
+
+		const db = telemetry.getDb();
+		const row = db
+			.prepare("SELECT provider FROM runs WHERE session_id = ?")
+			.get("session-provider-explicit") as { provider: string | null };
+		expect(row).not.toBeNull();
+		expect(row.provider).toBe("github");
+	});
+
+	it("persists provider for future subagent rows even when the model string is flat", async () => {
+		const telemetry = await loadTelemetry();
+		telemetry.initTelemetryDb();
+		telemetry.logRun(
+			makeRun({ model: "gpt-4.1", provider: "github", agent: "worker" }),
+			"/tmp/project",
+			"session-provider-flat-future",
+			1,
+		);
+
+		const db = telemetry.getDb();
+		const row = db
+			.prepare("SELECT provider FROM runs WHERE session_id = ?")
+			.get("session-provider-flat-future") as { provider: string | null };
+		expect(row).not.toBeNull();
+		expect(row.provider).toBe("github");
 	});
 
 	it("stores null provider when model is null", async () => {
@@ -437,6 +470,52 @@ describe("telemetry depth/main_agent/provider storage", () => {
 			.get("session-post-migration-scout") as { agent: string; provider: string | null };
 		expect(row.agent).toBe("scout");
 		expect(row.provider).toBe("anthropic");
+	});
+
+	it("backfills legacy __main__ rows with flat unknown providers to github", async () => {
+		createPreProviderDb();
+		const dbPath = path.join(tempHome, ".pi", "data", "analytics.db");
+		const db = new DatabaseSync(dbPath);
+		db.exec("ALTER TABLE runs ADD COLUMN provider TEXT");
+		db.prepare("INSERT INTO runs (timestamp, session_id, agent, model, provider, task_summary) VALUES (?, ?, ?, ?, ?, ?)").run(
+			new Date().toISOString(),
+			"legacy-main-session",
+			"__main__",
+			"gpt-5.4-mini",
+			null,
+			"legacy main",
+		);
+		db.close();
+
+		const telemetry = await loadTelemetry();
+		telemetry.initTelemetryDb();
+
+		const reloaded = telemetry.getDb();
+		const githubRow = reloaded.prepare("SELECT provider FROM runs WHERE session_id = ?").get("legacy-main-session") as { provider: string | null };
+		expect(githubRow.provider).toBe("github");
+	});
+
+	it("backfills legacy null-or-unknown provider flat models using the approved provider rule", async () => {
+		createPreProviderDb();
+		const dbPath = path.join(tempHome, ".pi", "data", "analytics.db");
+		const db = new DatabaseSync(dbPath);
+		db.exec("ALTER TABLE runs ADD COLUMN provider TEXT");
+		const insert = db.prepare("INSERT INTO runs (timestamp, session_id, agent, model, provider, task_summary) VALUES (?, ?, ?, ?, ?, ?)");
+		insert.run(new Date().toISOString(), "legacy-flat-github", "__main__", "gpt-4.1", null, "legacy github");
+		insert.run(new Date().toISOString(), "legacy-flat-opencode-deepseek", "__main__", "deepseek-r1", "unknown", "legacy deepseek");
+		insert.run(new Date().toISOString(), "legacy-flat-opencode-nemotron", "__main__", "nemotron-70b", null, "legacy nemotron");
+		db.close();
+
+		const telemetry = await loadTelemetry();
+		telemetry.initTelemetryDb();
+
+		const reloaded = telemetry.getDb();
+		const githubRow = reloaded.prepare("SELECT provider FROM runs WHERE session_id = ?").get("legacy-flat-github") as { provider: string | null };
+		const deepseekRow = reloaded.prepare("SELECT provider FROM runs WHERE session_id = ?").get("legacy-flat-opencode-deepseek") as { provider: string | null };
+		const nemotronRow = reloaded.prepare("SELECT provider FROM runs WHERE session_id = ?").get("legacy-flat-opencode-nemotron") as { provider: string | null };
+		expect(githubRow.provider).toBe("github");
+		expect(deepseekRow.provider).toBe("opencode");
+		expect(nemotronRow.provider).toBe("opencode");
 	});
 });
 

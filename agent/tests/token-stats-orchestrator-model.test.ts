@@ -166,7 +166,7 @@ describe("token-stats orchestrator model identity", () => {
 		await handler("all", createMockCtx(rendered));
 		const out = getRenderedText(rendered);
 
-		expect(out).toMatch(/By Provider[\s\S]*orchestrator\s+1\s+\$0\.1200/);
-		expect(out).not.toMatch(/By Provider[\s\S]*github\s+1\s+\$0\.1200/);
+		expect(out).toMatch(/By Provider[\s\S]*github\s+1\s+\$0\.1200/);
+		expect(out).not.toMatch(/By Provider[\s\S]*orchestrator\s+1\s+\$0\.1200/);
 	});
 });

@@ -48,10 +48,7 @@ async function loadTokenStatsHandler() {
 	vi.resetModules();
 	vi.doMock("node:os", async () => {
 		const actual = await vi.importActual<typeof import("node:os")>("node:os");
-		return {
-			...actual,
-			homedir: () => tempHome,
-		};
+		return { ...actual, homedir: () => tempHome };
 	});
 
 	let handler: ((args: string, ctx: any) => Promise<void>) | null = null;
@@ -131,9 +128,9 @@ async function createAnalyticsDb(rows: RunRow[]) {
 	db.close();
 }
 
-describe("token-stats orchestrator usage/cost extraction", () => {
+describe("token-stats By Provider clarified regression", () => {
 	beforeEach(() => {
-		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "token-stats-orchestrator-"));
+		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "token-stats-by-provider-clarified-"));
 	});
 
 	afterEach(() => {
@@ -144,32 +141,21 @@ describe("token-stats orchestrator usage/cost extraction", () => {
 		}
 	});
 
-	it("shows orchestrator usage and cost when the main agent has telemetry but no provider field", async () => {
+	it("aggregates __main__ github-backed runs under github and never shows orchestrator in By Provider", async () => {
 		await createAnalyticsDb([
-			{
-				timestamp: new Date().toISOString(),
-				session_id: "orchestrator-run",
-				agent: "__main__",
-				model: null,
-				provider: null,
-				input_tokens: 1200,
-				output_tokens: 300,
-				cost_usd: 0.42,
-				duration_ms: 2500,
-				exit_code: 0,
-				cwd: "/home/user/project",
-				task_summary: "orchestrate repo scan",
-			},
+			{ timestamp: new Date().toISOString(), session_id: "r1", agent: "__main__", provider: "github", model: "github-copilot/gpt-5.4-mini", cost_usd: 0.12 },
+			{ timestamp: new Date().toISOString(), session_id: "r2", agent: "__main__", provider: "github", model: "github-copilot/claude-sonnet-4.6", cost_usd: 0.18 },
+			{ timestamp: new Date().toISOString(), session_id: "r3", agent: "planner", provider: "opencode", model: "deepseek-v4", cost_usd: 0.22 },
 		]);
 
 		const handler = await loadTokenStatsHandler();
 		const rendered: string[][] = [];
 		await handler("all", createMockCtx(rendered));
 		const out = getRenderedText(rendered);
+		const byProvider = out.split("By Model")[0].split("By Provider").slice(1).join("By Provider");
 
-		expect(out).toContain("$0.4200");
-		expect(out).toContain("1.5K");
-		expect(out).toContain("By Provider");
-		expect(out).toMatch(/By Provider[\s\S]*unknown\s+1\s+\$0\.4200/);
+		expect(byProvider).toMatch(/github\s+2\s+\$0\.3000/);
+		expect(byProvider).toMatch(/opencode\s+1\s+\$0\.2200/);
+		expect(byProvider).not.toMatch(/orchestrator/);
 	});
 });

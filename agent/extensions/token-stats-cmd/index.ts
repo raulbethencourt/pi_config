@@ -24,7 +24,9 @@ function truncateToWidth(text: string, width: number): string {
     return text.slice(0, width - 1) + "…";
 }
 
-const DB_PATH = path.join(os.homedir(), ".pi", "data", "analytics.db");
+function getDbPath(): string {
+    return path.join(os.homedir(), ".pi", "data", "analytics.db");
+}
 
 type Period = "today" | "week" | "month" | "all";
 
@@ -53,7 +55,8 @@ export default function (pi: ExtensionAPI) {
                 lines.push("");
             }
 
-            if (!fs.existsSync(DB_PATH)) {
+            const dbPath = getDbPath();
+            if (!fs.existsSync(dbPath)) {
                 lines.push(`  ${dim("No telemetry data — database not found at ~/.pi/data/analytics.db")}`);
                 return showScrollableUi(ctx, lines);
             }
@@ -61,17 +64,30 @@ export default function (pi: ExtensionAPI) {
             let db: any = null;
             try {
                 const { DatabaseSync } = require("node:sqlite");
-                db = new DatabaseSync(DB_PATH);
+                db = new DatabaseSync(dbPath);
+
+                const runColumns = new Set((db.prepare(`
+                    PRAGMA table_info(runs)
+                `).all() as Array<{ name: string }>).map((row) => String(row.name)));
+                const providerExpr = runColumns.has("provider")
+                    ? "COALESCE(NULLIF(TRIM(provider), ''), NULLIF(CASE WHEN instr(lower(model), 'deepseek') > 0 OR instr(lower(model), 'nemotron') > 0 THEN 'opencode' ELSE 'github' END, ''), 'unknown')"
+                    : "COALESCE(NULLIF(CASE WHEN instr(lower(model), 'deepseek') > 0 OR instr(lower(model), 'nemotron') > 0 THEN 'opencode' ELSE 'github' END, ''), 'unknown')";
+                const tokensExpr = runColumns.has("input_tokens") || runColumns.has("output_tokens") ? "COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)" : "0";
+                const cacheSavingsExpr = runColumns.has("cache_read") || runColumns.has("cache_write") ? "COALESCE(cache_read, 0) + COALESCE(cache_write, 0)" : "0";
+                const durationExpr = runColumns.has("duration_ms") ? "duration_ms" : "0";
+                const exitCodeExpr = runColumns.has("exit_code") ? "exit_code" : "0";
+                const taskSummaryExpr = runColumns.has("task_summary") ? "task_summary" : "''";
+                const cwdExpr = runColumns.has("cwd") ? "cwd" : "''";
 
                 const summary = db.prepare(`
                     SELECT
                         COUNT(*) AS runs,
                         COALESCE(SUM(cost_usd), 0) AS cost,
-                        COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
-                        COALESCE(SUM(cache_read + cache_write), 0) AS cache_savings,
-                        COALESCE(AVG(duration_ms), 0) AS avg_duration,
+                        COALESCE(SUM(${tokensExpr}), 0) AS tokens,
+                        COALESCE(SUM(${cacheSavingsExpr}), 0) AS cache_savings,
+                        COALESCE(AVG(${durationExpr}), 0) AS avg_duration,
                         CASE WHEN COUNT(*) > 0
-                            THEN SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+                            THEN SUM(CASE WHEN ${exitCodeExpr} = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
                             ELSE 0 END AS success_pct
                     FROM runs
                     ${where.sql}
@@ -108,45 +124,39 @@ export default function (pi: ExtensionAPI) {
                         agent,
                         COUNT(*) AS runs,
                         COALESCE(SUM(cost_usd), 0) AS cost,
-                        COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
-                        COALESCE(AVG(duration_ms), 0) AS avg_duration,
-                        SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) AS success_pct
+                        COALESCE(SUM(${tokensExpr}), 0) AS tokens,
+                        COALESCE(AVG(${durationExpr}), 0) AS avg_duration,
+                        SUM(CASE WHEN ${exitCodeExpr} = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) AS success_pct
                     FROM runs
                     ${where.sql}
                     GROUP BY agent
                     ORDER BY cost DESC
                 `).all(...where.params);
 
-                const byModel = db.prepare(`
+                const byModelRaw = db.prepare(`
                     SELECT
                         agent,
                         COALESCE(model, 'unknown') AS model,
                         COUNT(*) AS runs,
                         COALESCE(SUM(cost_usd), 0) AS cost,
-                        COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
-                        COALESCE(AVG(duration_ms), 0) AS avg_duration,
-                        SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) AS success_pct
+                        COALESCE(SUM(${tokensExpr}), 0) AS tokens,
+                        COALESCE(SUM(${durationExpr}), 0) AS total_duration,
+                        SUM(CASE WHEN ${exitCodeExpr} = 0 THEN 1 ELSE 0 END) AS successes
                     FROM runs
                     ${where.sql}
                     GROUP BY agent, COALESCE(model, 'unknown')
-                    ORDER BY cost DESC
-                `).all(...where.params);
+                `).all(...where.params).map((row: any) => enrichOrchestratorRow(row, settings));
 
                 const byProjectRaw = db.prepare(`
                     SELECT
-                        COALESCE(cwd, '') AS cwd,
+                        COALESCE(${cwdExpr}, '') AS cwd,
                         COUNT(*) AS runs,
                         COALESCE(SUM(cost_usd), 0) AS cost
                     FROM runs
                     ${where.sql}
-                    GROUP BY COALESCE(cwd, '')
+                    GROUP BY COALESCE(${cwdExpr}, '')
                     ORDER BY cost DESC
                 `).all(...where.params);
-
-                const runColumns = new Set((db.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>).map((col) => col.name));
-                const providerExpr = runColumns.has("provider")
-                    ? "COALESCE(CASE WHEN agent = '__main__' THEN 'orchestrator' ELSE NULLIF(TRIM(provider), '') END, CASE WHEN instr(COALESCE(model, ''), '/') > 0 THEN substr(model, 1, instr(model, '/') - 1) WHEN NULLIF(TRIM(model), '') IS NOT NULL THEN TRIM(model) END, 'unknown')"
-                    : "COALESCE(CASE WHEN agent = '__main__' THEN 'orchestrator' WHEN instr(COALESCE(model, ''), '/') > 0 THEN substr(model, 1, instr(model, '/') - 1) WHEN NULLIF(TRIM(model), '') IS NOT NULL THEN TRIM(model) END, 'unknown')";
 
                 const byDayRaw = db.prepare(`
                     SELECT
@@ -159,27 +169,28 @@ export default function (pi: ExtensionAPI) {
                     ORDER BY day ASC
                 `).all(...where.params);
 
-                const byProvider = db.prepare(`
+                const byProviderRaw = db.prepare(`
                     SELECT
+                        agent,
                         ${providerExpr} AS provider,
+                        COALESCE(model, 'unknown') AS model,
                         COUNT(*) AS runs,
                         COALESCE(SUM(cost_usd), 0) AS cost,
-                        COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
-                        COALESCE(AVG(duration_ms), 0) AS avg_duration,
-                        SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) AS success_pct
+                        COALESCE(SUM(${tokensExpr}), 0) AS tokens,
+                        COALESCE(SUM(${durationExpr}), 0) AS total_duration,
+                        SUM(CASE WHEN ${exitCodeExpr} = 0 THEN 1 ELSE 0 END) AS successes
                     FROM runs
                     ${where.sql}
-                    GROUP BY ${providerExpr}
-                    ORDER BY cost DESC
-                `).all(...where.params);
+                    GROUP BY agent, ${providerExpr}, COALESCE(model, 'unknown')
+                `).all(...where.params).map((row: any) => enrichOrchestratorRow(row, settings));
 
                 const top5 = db.prepare(`
                     SELECT
                         agent,
                         COALESCE(model, 'unknown') AS model,
                         COALESCE(cost_usd, 0) AS cost,
-                        COALESCE(input_tokens + output_tokens, 0) AS tokens,
-                        COALESCE(task_summary, '') AS task_summary
+                        COALESCE(${tokensExpr}, 0) AS tokens,
+                        COALESCE(${taskSummaryExpr}, '') AS task_summary
                     FROM runs
                     ${where.sql}
                     ORDER BY cost DESC
@@ -229,6 +240,9 @@ export default function (pi: ExtensionAPI) {
                 }
                 lines.push("");
 
+                const byProvider = collapseTokenStatsRows(byProviderRaw, normalizeProviderKey);
+                const byModel = collapseTokenStatsRows(byModelRaw, normalizeModelKey);
+
                 // By Provider
                 lines.push(heading("  By Provider"));
                 lines.push("");
@@ -246,7 +260,7 @@ export default function (pi: ExtensionAPI) {
                 lines.push("");
                 lines.push(`  ${label(padRight("Model", 22))} ${label(padLeft("Runs", 5))} ${label(padLeft("Cost", 10))} ${label(padLeft("Tokens", 10))} ${label(padLeft("Avg", 7))} ${label(padLeft("Success", 8))}`);
                 lines.push(`  ${dim("─".repeat(68))}`);
-                for (const row of byModel.map((r: any) => enrichOrchestratorRow(r, settings))) {
+                for (const row of byModel) {
                     lines.push(
                         `  ${value(padRight(String(row.model || "unknown"), 22))} ${value(padLeft(String(row.runs), 5))} ${value(padLeft(formatCost(Number(row.cost)), 10))} ${value(padLeft(formatTokens(Number(row.tokens)), 10))} ${value(padLeft(formatDuration(Number(row.avg_duration)), 7))} ${success(padLeft(`${Number(row.success_pct).toFixed(0)}%`, 8))}`,
                     );
@@ -260,7 +274,7 @@ export default function (pi: ExtensionAPI) {
                 lines.push(`  ${dim("─".repeat(86))}`);
                 for (const row of top5) {
                     lines.push(
-                        `  ${value(padRight(renderAgentLabel(String(row.agent || "unknown")), 12))} ${value(padRight(String(row.model || "unknown"), 16))} ${value(padLeft(formatCost(Number(row.cost)), 10))} ${value(padLeft(formatTokens(Number(row.tokens)), 10))} ${dim(truncate(row.task_summary, 34))}`,
+                        `  ${value(padRight(renderAgentLabel(String(row.agent || "unknown")), 12))} ${value(padRight(normalizeModelKey(row), 16))} ${value(padLeft(formatCost(Number(row.cost)), 10))} ${value(padLeft(formatTokens(Number(row.tokens)), 10))} ${dim(truncate(row.task_summary, 34))}`,
                     );
                 }
                 lines.push("");
@@ -427,6 +441,60 @@ function normalizeDays(rows: any[], period: Period): Array<{ day: string; runs: 
     return days.map((day) => map.get(day) ?? { day, runs: 0, cost: 0 });
 }
 
+function collapseTokenStatsRows(rows: any[], keyFn: (row: any) => string): Array<{ provider?: string; model?: string; runs: number; cost: number; tokens: number; avg_duration: number; success_pct: number }> {
+    const map = new Map<string, { provider?: string; model?: string; runs: number; cost: number; tokens: number; duration: number; successes: number }>();
+    for (const row of rows) {
+        const key = keyFn(row);
+        const current = map.get(key) ?? { runs: 0, cost: 0, tokens: 0, duration: 0, successes: 0 };
+        current.runs += Number(row.runs || 0);
+        current.cost += Number(row.cost || 0);
+        current.tokens += Number(row.tokens || 0);
+        current.duration += Number(row.total_duration || 0);
+        current.successes += Number(row.successes || 0);
+        if (row.provider != null) current.provider = String(row.provider);
+        if (row.model != null) current.model = String(row.model);
+        map.set(key, current);
+    }
+    return [...map.entries()].map(([key, row]) => ({
+        provider: key,
+        model: key,
+        runs: row.runs,
+        cost: row.cost,
+        tokens: row.tokens,
+        avg_duration: row.runs > 0 ? row.duration / row.runs : 0,
+        success_pct: row.runs > 0 ? (row.successes * 100) / row.runs : 0,
+    })).sort((a, b) => b.cost - a.cost);
+}
+
+function normalizeProviderKey(row: any): string {
+    const provider = normalizeProviderName(normalizeUnknown(row.provider));
+    const model = String(row.model || "").trim();
+    const slash = model.indexOf("/");
+    const modelPrefix = slash > 0 ? normalizeProviderName(normalizeUnknown(model.slice(0, slash))) : null;
+    const modelLeaf = slash > 0 ? normalizeUnknown(model.slice(slash + 1)) : normalizeUnknown(model);
+
+    if (provider) {
+        if (provider === modelLeaf) {
+            return modelPrefix ?? normalizeFlatRuntimeProvider(provider);
+        }
+        if (!modelPrefix && !String(row.model || "").includes("/")) {
+            return normalizeFlatRuntimeProvider(provider);
+        }
+        return normalizeFlatRuntimeProvider(provider);
+    }
+
+    if (modelPrefix) return modelPrefix;
+    if (modelLeaf) return normalizeFlatRuntimeProvider(modelLeaf);
+    return "unknown";
+}
+
+function normalizeModelKey(row: any): string {
+    const model = String(row.model || "unknown").trim();
+    const slash = model.indexOf("/");
+    const normalized = slash > 0 ? model.slice(slash + 1) : model;
+    return normalized === "deepseek-v4" ? "deepseek-v4-flash-free" : normalized;
+}
+
 function toDateKey(d: Date): string {
     return d.toISOString().slice(0, 10);
 }
@@ -501,8 +569,25 @@ function enrichOrchestratorRow<T extends Record<string, any>>(row: T, settings: 
     if (row.agent !== "__main__") return row;
     return {
         ...row,
-        provider: row.provider ?? settings.provider ?? null,
-        model: row.model === "unknown" ? (settings.model ?? row.model) : (row.model ?? settings.model ?? null),
+        provider: normalizeUnknown(row.provider) ?? settings.provider ?? null,
+        model: normalizeUnknown(row.model) ?? settings.model ?? null,
         thinkingLevel: settings.thinkingLevel,
     };
+}
+
+function normalizeProviderName(value: string | null): string | null {
+    if (!value) return null;
+    return value === "github-copilot" ? "github" : value;
+}
+
+function normalizeFlatRuntimeProvider(modelId: string): string {
+    const normalized = modelId.trim().toLowerCase();
+    if (normalized.includes("deepseek") || normalized.includes("nemotron")) return "opencode";
+    return "github";
+}
+
+function normalizeUnknown(value: any): string | null {
+    const text = String(value ?? "").trim();
+    if (!text || text.toLowerCase() === "unknown") return null;
+    return text;
 }
