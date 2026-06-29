@@ -253,7 +253,7 @@ export default function (pi: ExtensionAPI) {
                 lines.push(`  ${dim("─".repeat(86))}`);
                 for (const row of top5) {
                     lines.push(
-                        `  ${value(padRight(String(row.agent || "unknown"), 12))} ${value(padRight(String(row.model || "unknown"), 16))} ${value(padLeft(formatCost(Number(row.cost)), 10))} ${value(padLeft(formatTokens(Number(row.tokens)), 10))} ${dim(truncate(row.task_summary, 34))}`,
+                        `  ${value(padRight(renderAgentLabel(String(row.agent || "unknown")), 12))} ${value(padRight(String(row.model || "unknown"), 16))} ${value(padLeft(formatCost(Number(row.cost)), 10))} ${value(padLeft(formatTokens(Number(row.tokens)), 10))} ${dim(truncate(row.task_summary, 34))}`,
                     );
                 }
                 lines.push("");

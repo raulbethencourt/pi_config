@@ -518,7 +518,10 @@ async function buildPiArgs(
 
 	// Resolve MCP tools
 	const resolvedMCP = resolveMCPTools(agent);
-	const mcpEnv: Record<string, string | undefined> = { MCP_DIRECT_TOOLS: resolvedMCP.envValue };
+	const mcpEnv: Record<string, string | undefined> = {
+		MCP_DIRECT_TOOLS: resolvedMCP.envValue,
+		PI_SUBAGENT_DEPTH: String(childDepth),
+	};
 
 	if (resolvedMCP.loadAdapter) {
 		// Add pi-mcp-adapter extension to the load list
