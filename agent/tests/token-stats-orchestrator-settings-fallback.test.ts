@@ -1,0 +1,184 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+type RunRow = {
+	timestamp: string;
+	session_id?: string;
+	agent?: string;
+	model?: string | null;
+	provider?: string | null;
+	task_summary?: string;
+	input_tokens?: number;
+	output_tokens?: number;
+	cache_read?: number;
+	cache_write?: number;
+	cost_usd?: number;
+	turns?: number;
+	duration_ms?: number;
+	exit_code?: number;
+	cwd?: string;
+};
+
+let tempHome = "";
+
+const RUNS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  model TEXT,
+  provider TEXT,
+  task_summary TEXT,
+  input_tokens INTEGER DEFAULT 0,
+  output_tokens INTEGER DEFAULT 0,
+  cache_read INTEGER DEFAULT 0,
+  cache_write INTEGER DEFAULT 0,
+  cost_usd REAL DEFAULT 0,
+  turns INTEGER DEFAULT 0,
+  duration_ms INTEGER DEFAULT 0,
+  exit_code INTEGER,
+  cwd TEXT
+);
+`;
+
+async function loadTokenStatsHandler() {
+	vi.resetModules();
+	vi.doMock("node:os", async () => {
+		const actual = await vi.importActual<typeof import("node:os")>("node:os");
+		return {
+			...actual,
+			homedir: () => tempHome,
+		};
+	});
+
+	let handler: ((args: string, ctx: any) => Promise<void>) | null = null;
+	const extension = await import("../extensions/token-stats-cmd/index.ts");
+	extension.default({
+		registerCommand(name: string, config: any) {
+			if (name === "token_stats") handler = config.handler;
+		},
+	} as any);
+
+	if (!handler) throw new Error("token_stats handler not registered");
+	return handler;
+}
+
+function createMockCtx(renderedFrames: string[][]) {
+	const theme = {
+		bold: (s: string) => s,
+		fg: (_color: string, s: string) => s,
+	};
+	const rows = process.stdout.rows;
+	Object.defineProperty(process.stdout, "rows", { value: 200, configurable: true });
+
+	return {
+		ui: {
+			theme,
+			custom: async (fn: any) => {
+				const component = fn({ requestRender: () => {} }, theme, null, () => {});
+				renderedFrames.push(component.render(200));
+			},
+		},
+		__restoreRows: () => Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true }),
+	};
+}
+
+function getRenderedText(renderedFrames: string[][]): string {
+	return renderedFrames.flat().join("\n");
+}
+
+async function createAnalyticsDb(rows: RunRow[]) {
+	const dbDir = path.join(tempHome, ".pi", "data");
+	const dbPath = path.join(dbDir, "analytics.db");
+	fs.mkdirSync(dbDir, { recursive: true });
+
+	const { DatabaseSync } = await import("node:sqlite");
+	const db = new DatabaseSync(dbPath);
+	db.exec(RUNS_SCHEMA);
+
+	const stmt = db.prepare(`
+		INSERT INTO runs (
+			timestamp, session_id, agent, model, provider, task_summary,
+			input_tokens, output_tokens, cache_read, cache_write,
+			cost_usd, turns, duration_ms, exit_code, cwd
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`);
+
+	for (const row of rows) {
+		stmt.run(
+			row.timestamp,
+			row.session_id ?? crypto.randomUUID(),
+			row.agent ?? "agent",
+			row.model ?? null,
+			row.provider ?? null,
+			row.task_summary ?? "task",
+			row.input_tokens ?? 0,
+			row.output_tokens ?? 0,
+			row.cache_read ?? 0,
+			row.cache_write ?? 0,
+			row.cost_usd ?? 0,
+			row.turns ?? 1,
+			row.duration_ms ?? 0,
+			row.exit_code ?? 0,
+			row.cwd ?? "",
+		);
+	}
+
+	db.close();
+}
+
+describe("token-stats orchestrator settings fallback", () => {
+	beforeEach(() => {
+		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "token-stats-settings-"));
+		fs.mkdirSync(path.join(tempHome, ".pi", "agent"), { recursive: true });
+		fs.writeFileSync(
+			path.join(tempHome, ".pi", "agent", "settings.json"),
+			JSON.stringify({
+				defaultProvider: "openai",
+				defaultModel: "gpt-5.4",
+				defaultThinkingLevel: "medium",
+			}),
+		);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.doUnmock("node:os");
+		if (tempHome && fs.existsSync(tempHome)) {
+			fs.rmSync(tempHome, { recursive: true, force: true });
+		}
+	});
+
+	it("falls back to ~/.pi/agent/settings.json defaults for __main__ model telemetry when runtime model data is missing", async () => {
+		await createAnalyticsDb([
+			{
+				timestamp: new Date().toISOString(),
+				session_id: "orchestrator-settings-run",
+				agent: "__main__",
+				model: null,
+				provider: null,
+				input_tokens: 250,
+				output_tokens: 50,
+				cost_usd: 0.03,
+				duration_ms: 800,
+				exit_code: 0,
+				cwd: "/home/user/project",
+				task_summary: "orchestrate missing model metadata",
+			},
+		]);
+
+		const handler = await loadTokenStatsHandler();
+		const rendered: string[][] = [];
+		await handler("all", createMockCtx(rendered));
+		const out = getRenderedText(rendered);
+
+		expect(out).toContain("gpt-5.4");
+		expect(out).toContain("openai");
+		expect(out).toContain("medium");
+		expect(out).not.toContain("unknown");
+	});
+});

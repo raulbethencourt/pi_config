@@ -101,6 +101,8 @@ export default function (pi: ExtensionAPI) {
                     return showScrollableUi(ctx, lines);
                 }
 
+                const settings = readTokenStatsSettings();
+
                 const byAgent = db.prepare(`
                     SELECT
                         agent,
@@ -117,6 +119,7 @@ export default function (pi: ExtensionAPI) {
 
                 const byModel = db.prepare(`
                     SELECT
+                        agent,
                         COALESCE(model, 'unknown') AS model,
                         COUNT(*) AS runs,
                         COALESCE(SUM(cost_usd), 0) AS cost,
@@ -125,7 +128,7 @@ export default function (pi: ExtensionAPI) {
                         SUM(CASE WHEN exit_code = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) AS success_pct
                     FROM runs
                     ${where.sql}
-                    GROUP BY COALESCE(model, 'unknown')
+                    GROUP BY agent, COALESCE(model, 'unknown')
                     ORDER BY cost DESC
                 `).all(...where.params);
 
@@ -142,7 +145,7 @@ export default function (pi: ExtensionAPI) {
 
                 const runColumns = new Set((db.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>).map((col) => col.name));
                 const providerExpr = runColumns.has("provider")
-                    ? "COALESCE(NULLIF(TRIM(provider), ''), CASE WHEN agent = '__main__' THEN 'orchestrator' WHEN instr(COALESCE(model, ''), '/') > 0 THEN substr(model, 1, instr(model, '/') - 1) WHEN NULLIF(TRIM(model), '') IS NOT NULL THEN TRIM(model) END, 'unknown')"
+                    ? "COALESCE(CASE WHEN agent = '__main__' THEN 'orchestrator' ELSE NULLIF(TRIM(provider), '') END, CASE WHEN instr(COALESCE(model, ''), '/') > 0 THEN substr(model, 1, instr(model, '/') - 1) WHEN NULLIF(TRIM(model), '') IS NOT NULL THEN TRIM(model) END, 'unknown')"
                     : "COALESCE(CASE WHEN agent = '__main__' THEN 'orchestrator' WHEN instr(COALESCE(model, ''), '/') > 0 THEN substr(model, 1, instr(model, '/') - 1) WHEN NULLIF(TRIM(model), '') IS NOT NULL THEN TRIM(model) END, 'unknown')";
 
                 const byDayRaw = db.prepare(`
@@ -181,7 +184,7 @@ export default function (pi: ExtensionAPI) {
                     ${where.sql}
                     ORDER BY cost DESC
                     LIMIT 5
-                `).all(...where.params);
+                `).all(...where.params).map((row: any) => enrichOrchestratorRow(row, settings));
                 const dayPreview = normalizeDays(byDayRaw, period)[0]?.day;
                 const projectPreview = basenameOrUnknown(String(byProjectRaw[0]?.cwd || ""));
 
@@ -196,6 +199,10 @@ export default function (pi: ExtensionAPI) {
                 lines.push(`  ${label("Avg duration:")}    ${value(formatDuration(Number(summary.avg_duration)))}`);
                 if (dayPreview) lines.push(`  ${dim(`Day preview: ${dayPreview}`)}`);
                 if (projectPreview) lines.push(`  ${dim(`Project preview: ${projectPreview}`)}`);
+                if (settings.provider || settings.model || settings.thinkingLevel) {
+                    const orchestratorBits = [settings.provider, settings.model, settings.thinkingLevel].filter(Boolean);
+                    lines.push(`  ${dim(`Orchestrator defaults: ${orchestratorBits.join(" / ")}`)}`);
+                }
                 lines.push("");
 
                 // By Agent
@@ -239,7 +246,7 @@ export default function (pi: ExtensionAPI) {
                 lines.push("");
                 lines.push(`  ${label(padRight("Model", 22))} ${label(padLeft("Runs", 5))} ${label(padLeft("Cost", 10))} ${label(padLeft("Tokens", 10))} ${label(padLeft("Avg", 7))} ${label(padLeft("Success", 8))}`);
                 lines.push(`  ${dim("─".repeat(68))}`);
-                for (const row of byModel) {
+                for (const row of byModel.map((r: any) => enrichOrchestratorRow(r, settings))) {
                     lines.push(
                         `  ${value(padRight(String(row.model || "unknown"), 22))} ${value(padLeft(String(row.runs), 5))} ${value(padLeft(formatCost(Number(row.cost)), 10))} ${value(padLeft(formatTokens(Number(row.tokens)), 10))} ${value(padLeft(formatDuration(Number(row.avg_duration)), 7))} ${success(padLeft(`${Number(row.success_pct).toFixed(0)}%`, 8))}`,
                     );
@@ -474,4 +481,28 @@ function basenameOrUnknown(cwd: string): string {
 
 function renderAgentLabel(agent: string): string {
     return agent === "__main__" ? "orchestrator" : agent;
+}
+
+function readTokenStatsSettings(): { provider?: string; model?: string; thinkingLevel?: string } {
+    try {
+        const raw = fs.readFileSync(path.join(os.homedir(), ".pi", "agent", "settings.json"), "utf8");
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        return {
+            provider: typeof parsed.defaultProvider === "string" ? parsed.defaultProvider : undefined,
+            model: typeof parsed.defaultModel === "string" ? parsed.defaultModel : undefined,
+            thinkingLevel: typeof parsed.defaultThinkingLevel === "string" ? parsed.defaultThinkingLevel : undefined,
+        };
+    } catch {
+        return {};
+    }
+}
+
+function enrichOrchestratorRow<T extends Record<string, any>>(row: T, settings: { provider?: string; model?: string; thinkingLevel?: string }): T {
+    if (row.agent !== "__main__") return row;
+    return {
+        ...row,
+        provider: row.provider ?? settings.provider ?? null,
+        model: row.model === "unknown" ? (settings.model ?? row.model) : (row.model ?? settings.model ?? null),
+        thinkingLevel: settings.thinkingLevel,
+    };
 }
