@@ -4,7 +4,7 @@ description: Code reviewer — You are an expert code reviewer tasked with analy
 tools: read, grep, find, ls, rg, workspace, git_inspect, ctx_search
 skills: delta, context-mode
 model: github-copilot/claude-sonnet-4.6
-thinking: medium
+thinking: minimal
 ---
 # Code Review Agent
 

@@ -7,11 +7,7 @@
 		"complex": "github-copilot/claude-sonnet-4.6"
 	},
 	"refactorer": {
-		"simple": "github-copilot/gpt-5.4",
 		"complex": "github-copilot/claude-sonnet-4.6"
-	},
-	"scout": {
-		"complex": "github-copilot/gpt-5.4"
 	},
 	"fallback": {
 		"simple": "opencode/mimo-v2.5-free",
