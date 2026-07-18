@@ -47,6 +47,8 @@ Example: `subagent({ tasks: [{ agent: "scout", task: "..." }, { agent: "research
 | Markdown work (`.md`, `README.md`, Obsidian files/notes/vault content) | doc-writer |
 | Create/edit/delete non-Markdown files, run commands, install packages | worker |
 | Non-trivial code change requiring design decisions | planner → worker |
+| Simplify / polish for clarity & consistency, no broader refactor scope, defaults to recently-modified code | code-simplifier |
+| General or explicitly broad-scoped behavior-preserving refactor | refactorer |
 | SugarCRM tests (PHPUnit, bns curl, bns run-batch) | sugar-tester |
 | Non-Sugar test creation/validation | tester |
 | Review git diff, validate code quality | codereviewer |
