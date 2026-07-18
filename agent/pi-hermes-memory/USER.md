@@ -1,0 +1,1 @@
+User prefers direct fixes to the legacy memory extension issue rather than exploring other projects. User is comfortable using terminal commands (cat, grep) and memory search tools. User expects the agent to investigate pi configuration files to resolve extension loading errors. <!-- created=2026-07-18, last=2026-07-18 -->
