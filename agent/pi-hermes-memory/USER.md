@@ -1,1 +1,3 @@
 User prefers direct fixes to the legacy memory extension issue rather than exploring other projects. User is comfortable using terminal commands (cat, grep) and memory search tools. User expects the agent to investigate pi configuration files to resolve extension loading errors. <!-- created=2026-07-18, last=2026-07-18 -->
+§
+User prefers having git add and commit commands available in pi agent configuration, and may command modifications to AGENTS.md to allow them. <!-- created=2026-07-18, last=2026-07-18 -->
