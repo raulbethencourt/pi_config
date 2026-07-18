@@ -295,7 +295,11 @@ export function unregisterAgent(name: string): void {
 
 // Expose registration functions globally so other extensions loaded via jiti
 // (which creates separate module instances) can access the shared agents array.
-(globalThis as any).__pi_subagents = { registerAgent, unregisterAgent, getAgents: () => agents };
+// `runSubagent` is a hoisted function declaration defined later in this file,
+// so it's already bound by the time this line runs at module-eval time —
+// exposing it here lets other extensions (e.g. pipeline) dispatch subagents
+// without re-implementing pi-process spawning.
+(globalThis as any).__pi_subagents = { registerAgent, unregisterAgent, getAgents: () => agents, runSubagent };
 
 function loadAgents(): AgentConfig[] {
 	const agents: AgentConfig[] = [];
