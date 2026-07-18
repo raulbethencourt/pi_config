@@ -3,16 +3,29 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import {
+	MAX_MEMORY_LINES,
+	MAX_MEMORY_BYTES,
+	WARN_MEMORY_LINES,
+	WARN_MEMORY_BYTES,
+} from "../extensions/memory/index.ts";
 
 // We'll test by importing the module and capturing what registerTool receives
 let registeredTool: any = null;
+
+// Captured before_agent_start handler (for size-ceiling tests)
+let beforeAgentStart: ((event: any, ctx: any) => Promise<any> | any) | null = null;
 
 // Mock ExtensionAPI
 const mockPi = {
 	registerTool(toolDef: any) {
 		registeredTool = toolDef;
 	},
-	on: () => {},
+	on: (eventName: string, handler: any) => {
+		if (eventName === "before_agent_start") {
+			beforeAgentStart = handler;
+		}
+	},
 	registerCommand: () => {},
 };
 
@@ -252,6 +265,177 @@ describe("memory tool", () => {
 			// Should be readable
 			expect(content).toContain("First memory");
 			expect(content).toContain("Second memory");
+		});
+	});
+
+	describe("before_agent_start size ceiling", () => {
+		function factLine(i: number): string {
+			return `- [2026-01-01T00:00:00Z] fact ${i}`;
+		}
+
+		function fatFactLine(i: number, padLength: number): string {
+			return `- [2026-01-01T00:00:00Z] fact ${i} ${"x".repeat(padLength)}`;
+		}
+
+		function writeMemoryFile(lines: string[]): string {
+			const memoryFile = getMemoryFilePath(process.cwd());
+			fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+			fs.writeFileSync(memoryFile, lines.join("\n") + "\n", "utf-8");
+			return memoryFile;
+		}
+
+		function extractMemorySection(systemPrompt: string): string {
+			const idx = systemPrompt.indexOf("## Project Memory");
+			expect(idx).toBeGreaterThan(-1);
+			return systemPrompt.slice(idx);
+		}
+
+		function factNumbers(text: string): number[] {
+			return [...text.matchAll(/fact (\d+)/g)].map((m) => parseInt(m[1], 10));
+		}
+
+		// Spec-literal fallbacks so scenario generation below stays well-formed
+		// even before the constants are exported from index.ts. The dedicated
+		// test below asserts the real exports match these literals directly.
+		const SPEC_MAX_LINES = MAX_MEMORY_LINES ?? 200;
+		const SPEC_MAX_BYTES = MAX_MEMORY_BYTES ?? 25 * 1024;
+		const SPEC_WARN_LINES = WARN_MEMORY_LINES ?? 150;
+		const SPEC_WARN_BYTES = WARN_MEMORY_BYTES ?? 20 * 1024;
+
+		it("exposes the size-ceiling constants used by the desired behavior", () => {
+			expect(MAX_MEMORY_LINES).toBe(200);
+			expect(MAX_MEMORY_BYTES).toBe(25 * 1024);
+			expect(WARN_MEMORY_LINES).toBe(150);
+			expect(WARN_MEMORY_BYTES).toBe(20 * 1024);
+		});
+
+		it("injects full content with no banner when well under both thresholds", async () => {
+			const lines = Array.from({ length: 5 }, (_, i) => factLine(i + 1));
+			writeMemoryFile(lines);
+
+			const result = await (beforeAgentStart as any)(
+				{ systemPrompt: "Base prompt" },
+				{ cwd: process.cwd() },
+			);
+
+			const section = extractMemorySection(result.systemPrompt);
+			expect(factNumbers(section)).toEqual([1, 2, 3, 4, 5]);
+			expect(section).not.toMatch(/WARNING/);
+			expect(section).not.toMatch(/ERROR/);
+		});
+
+		it("injects full content plus a WARNING banner when at/over the warn line threshold but under the hard ceiling", async () => {
+			const count = SPEC_WARN_LINES; // 150 short lines: well under MAX_MEMORY_LINES and MAX_MEMORY_BYTES
+			const lines = Array.from({ length: count }, (_, i) => factLine(i + 1));
+			writeMemoryFile(lines);
+
+			const result = await (beforeAgentStart as any)(
+				{ systemPrompt: "Base prompt" },
+				{ cwd: process.cwd() },
+			);
+
+			const section = extractMemorySection(result.systemPrompt);
+			// Full content still present - no truncation at warn level
+			expect(factNumbers(section)).toEqual(
+				Array.from({ length: count }, (_, i) => i + 1),
+			);
+			expect(section).toMatch(/WARNING/);
+			expect(section).toMatch(/approach(ing)?.*(size|limit)|limit.*approach/i);
+			expect(section).not.toMatch(/ERROR/);
+		});
+
+		it("truncates content and adds an ERROR banner when the hard line ceiling is exceeded", async () => {
+			const count = SPEC_MAX_LINES + 50; // 250 short lines, bytes stay tiny
+			const lines = Array.from({ length: count }, (_, i) => factLine(i + 1));
+			writeMemoryFile(lines);
+
+			const result = await (beforeAgentStart as any)(
+				{ systemPrompt: "Base prompt" },
+				{ cwd: process.cwd() },
+			);
+
+			const section = extractMemorySection(result.systemPrompt);
+			const facts = factNumbers(section);
+
+			expect(section).toMatch(/ERROR/);
+			expect(section).toMatch(/truncat/i);
+			expect(section).toMatch(/not (been )?loaded|not loaded|omit/i);
+			expect(facts).toContain(1);
+			expect(facts).toContain(SPEC_MAX_LINES);
+			expect(facts).not.toContain(SPEC_MAX_LINES + 1);
+			expect(facts).not.toContain(count);
+		});
+
+		it("injects full content plus a WARNING banner (not an ERROR banner) when line count is exactly MAX_MEMORY_LINES and nothing is actually dropped", async () => {
+			const count = SPEC_MAX_LINES; // exactly 200 short lines: nothing gets truncated
+			const lines = Array.from({ length: count }, (_, i) => factLine(i + 1));
+			writeMemoryFile(lines);
+
+			const result = await (beforeAgentStart as any)(
+				{ systemPrompt: "Base prompt" },
+				{ cwd: process.cwd() },
+			);
+
+			const section = extractMemorySection(result.systemPrompt);
+			// All 200 facts must still be present - nothing was actually truncated
+			expect(factNumbers(section)).toEqual(
+				Array.from({ length: count }, (_, i) => i + 1),
+			);
+			expect(section).not.toMatch(/ERROR/);
+			expect(section).toMatch(/WARNING/);
+		});
+
+		it("caps truncated line-based content at exactly MAX_MEMORY_LINES when the line ceiling (not the byte ceiling) is the binding constraint", async () => {
+			const count = 300; // far over MAX_MEMORY_LINES, but each line is short so bytes stay tiny
+			const lines = Array.from({ length: count }, (_, i) => factLine(i + 1));
+			writeMemoryFile(lines);
+
+			const result = await (beforeAgentStart as any)(
+				{ systemPrompt: "Base prompt" },
+				{ cwd: process.cwd() },
+			);
+
+			const section = extractMemorySection(result.systemPrompt);
+			const facts = factNumbers(section);
+
+			expect(facts.length).toBe(SPEC_MAX_LINES);
+			expect(facts).toEqual(
+				Array.from({ length: SPEC_MAX_LINES }, (_, i) => i + 1),
+			);
+		});
+
+		it("caps truncated byte-based content at MAX_MEMORY_BYTES when the byte ceiling (not the line ceiling) is the binding constraint", async () => {
+			// 50 lines (well under MAX_MEMORY_LINES) but each padded to ~700 bytes,
+			// so total size (~35KB) blows past MAX_MEMORY_BYTES (25KB) long before
+			// the 200-line cap would ever kick in.
+			const count = 50;
+			const padLength = 650;
+			const lines = Array.from({ length: count }, (_, i) =>
+				fatFactLine(i + 1, padLength),
+			);
+			writeMemoryFile(lines);
+
+			const result = await (beforeAgentStart as any)(
+				{ systemPrompt: "Base prompt" },
+				{ cwd: process.cwd() },
+			);
+
+			const section = extractMemorySection(result.systemPrompt);
+			const facts = factNumbers(section);
+
+			// Byte ceiling must have truncated well before all 50 lines were included
+			expect(facts.length).toBeLessThan(count);
+			expect(facts).not.toContain(count);
+
+			// The injected memory content (excluding the ERROR banner text) must not
+			// exceed MAX_MEMORY_BYTES
+			const errorIdx = section.search(/ERROR/);
+			const injectedContent =
+				errorIdx === -1 ? section : section.slice(0, errorIdx);
+			expect(Buffer.byteLength(injectedContent, "utf-8")).toBeLessThanOrEqual(
+				SPEC_MAX_BYTES + "## Project Memory\n\n".length,
+			);
+			expect(section).toMatch(/ERROR/);
 		});
 	});
 });
