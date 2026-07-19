@@ -731,17 +731,268 @@ export function isProtectedPath(filePath: string): boolean {
 // entry (see allowReadOnlyBashExemption above), not blanket across all of
 // PROTECTED_FOLDERS.
 //
-// KNOWN GAP (deferred, not fixed here): find/fd are matched here as
-// unconditionally read-only via a bare command-name prefix, with no
-// inspection of their arguments — a command like `find <path> -delete` or
-// `find <path> -exec rm {} \;` is still classified read-only by this regex
-// and bypasses the bash-layer protected-path block entirely, for every
-// PROTECTED_FOLDER_ENTRIES entry (old and new). Tracked separately in
-// pi-improvement-plan.md; out of scope for this fix.
+// find/fd are matched here as read-only via a bare command-name prefix, but
+// unlike the other commands in this list they accept primaries/flags that
+// mutate the filesystem (`find -delete`, `find -exec rm {} \;`, `fd -x ...`).
+// A bare command-name match alone would wrongly classify those as read-only.
+// isReadOnlyBashCommand (below) closes that gap by parsing find/fd arguments
+// and withholding the exemption when a mutating primary/flag is present.
 const READ_ONLY_CMDS = /^\s*(ls|cat|file|stat|wc|head|tail|less|more|tree|find|grep|rg|fd|bat)\b/;
 
+// Exact command-name membership check used per-segment (see isReadOnlySegment
+// below), derived from the same command list as READ_ONLY_CMDS. Kept as an
+// explicit Set (rather than re-running the regex per segment) since a
+// segment's leading token is already a single parsed word, not a string that
+// needs anchoring/`\b` handling.
+const READ_ONLY_CMD_NAMES = new Set([
+    "ls", "cat", "file", "stat", "wc", "head", "tail", "less", "more",
+    "tree", "find", "grep", "rg", "fd", "bat",
+]);
+
+// find primaries that mutate the filesystem or execute arbitrary commands.
+const FIND_MUTATING_PRIMARIES = new Set([
+    "-delete",
+    "-exec",
+    "-execdir",
+    "-ok",
+    "-okdir",
+    "-fprintf",
+    "-fprint",
+    "-fprint0",
+    "-fls",
+]);
+
+// find flags that take a literal pattern/value as their next argument.
+// Without accounting for this, a filename pattern that happens to be
+// spelled like a mutating primary (e.g. `find . -iname -exec`, matching
+// files literally named "-exec") would false-positive as a mutating find:
+// the "-exec" there is -iname's argument, not a primary in its own right.
+// This is a cheap positional heuristic, not full find-grammar parsing (it
+// doesn't know every value-taking flag), but it removes the common case.
+const FIND_VALUE_FLAGS = new Set([
+    "-name", "-iname", "-path", "-ipath", "-regex", "-iregex",
+    "-wholename", "-iwholename", "-newer", "-perm", "-user", "-group",
+    "-size", "-type", "-maxdepth", "-mindepth", "-printf",
+]);
+
+// Maps each raw token to a positional string for the adjacency-sensitive
+// lookback scan in hasFindMutatingPrimary below: plain string tokens keep
+// their literal value, while non-string tokens (glob patterns, shell
+// operators — anything shell-quote represents as an OpToken) are mapped to a
+// placeholder that can never equal a real find flag/primary name. This
+// differs from tokensToStrings, which DROPS non-string tokens entirely —
+// fine for most callers, but for a positional lookback that drop silently
+// closes the gap between the tokens on either side, e.g.
+// `find ~/.ssh -name * -delete` parses to
+// ["find", "~/.ssh", "-name", {op:"glob",pattern:"*"}, "-delete"], and
+// stripping the glob token via tokensToStrings collapses that to
+// ["find", "~/.ssh", "-name", "-delete"] — making "-delete" look like
+// "-name"'s literal argument (which FIND_VALUE_FLAGS below correctly
+// excuses) rather than a real mutating primary. Keeping a placeholder in the
+// glob's position preserves the true adjacency so the lookback still sees
+// "-delete" as following the glob, not "-name" directly.
+const NON_STRING_TOKEN_PLACEHOLDER = "\0";
+
+function tokensToPositionalStrings(tokens: Token[]): string[] {
+    return tokens.map((t) => (typeof t === "string" ? t : NON_STRING_TOKEN_PLACEHOLDER));
+}
+
+function hasFindMutatingPrimary(seg: Token[]): boolean {
+    const positional = tokensToPositionalStrings(seg);
+    for (let i = 0; i < positional.length; i++) {
+        if (!FIND_MUTATING_PRIMARIES.has(positional[i])) continue;
+        const prev = positional[i - 1];
+        if (prev && FIND_VALUE_FLAGS.has(prev)) continue; // literal argument, not a primary
+        return true;
+    }
+    return false;
+}
+
+// fd flags that execute arbitrary commands against matched files.
+const FD_MUTATING_FLAGS = new Set(["-x", "--exec", "-X", "--exec-batch"]);
+
+// fd is a clap-based CLI, and clap supports bundling boolean short flags
+// into a single token (e.g. `-Hx` is equivalent to `-H -x`). FD_MUTATING_FLAGS
+// above is an exact-string membership test, so a bundled token like `-Hx`
+// never equals the string "-x" and silently evades detection — letting a
+// destructive `fd -Hx rm -rf ~/.ssh \;` slip past as "read-only".
+//
+// A naive "does this dash-prefixed token contain x/X anywhere" scan is NOT
+// safe: fd also has value-taking short flags (-d, -E, -t, -e, -S, -c, -j)
+// whose attached value can legitimately contain x/X without the token being
+// an exec flag. `fd -tx .` is fd's own documented shorthand for
+// `--type executable`, and `-eXML`/`-Exyz` are attached-value forms of
+// -e/-E — none of these execute anything. The invariant relied on below:
+// walk the token's characters after the leading dash and stop as soon as a
+// value-taking short flag's letter is hit — everything after that point is
+// that flag's attached value, not a further bundled flag, so it's not
+// inspected. A bare x/X reached strictly before any value-taking flag
+// letter means a boolean bundle like `-Hx` or `-uHx`, which IS exec/
+// exec-batch usage.
+const FD_VALUE_TAKING_SHORT_FLAG_CHARS = new Set(["d", "E", "t", "e", "S", "c", "j"]);
+
+function isFdBundledExecFlag(token: string): boolean {
+    if (!/^-[A-Za-z]+$/.test(token)) return false; // single-dash, letters-only bundle
+    for (let i = 1; i < token.length; i++) {
+        const ch = token[i];
+        if (ch === "x" || ch === "X") return true;
+        if (FD_VALUE_TAKING_SHORT_FLAG_CHARS.has(ch)) return false; // rest is this flag's value
+    }
+    return false;
+}
+
+// Classifies a single segment (already split on &&/;/|/||) as read-only on
+// its own: its own leading command must be in READ_ONLY_CMD_NAMES, and if
+// that leading command is find/fd, the segment must also lack mutating
+// primaries/flags. Each segment is judged purely on its own tokens — no
+// segment inherits read-only status from a sibling segment.
+function isReadOnlySegment(seg: Token[]): boolean {
+    const args = tokensToStrings(seg);
+    if (args.length === 0) return false;
+    const cmd = args[0];
+
+    if (!READ_ONLY_CMD_NAMES.has(cmd)) return false;
+
+    if (cmd === "find" && hasFindMutatingPrimary(seg)) return false;
+    if (
+        cmd === "fd" &&
+        args.some((a) => FD_MUTATING_FLAGS.has(a) || isFdBundledExecFlag(a))
+    )
+        return false;
+
+    return true;
+}
+
+// Detects a command/statement separator that shell-quote's parse() will NOT
+// surface as an {op:...} token for splitOnOps to split on: a bare newline
+// (or CRLF) between two commands. Unlike ";"/"&&"/"||"/"&"/etc., which parse
+// into a distinguishable op token, shell-quote silently flattens a
+// newline-separated command pair into one continuous token array with no
+// operator marker at all (verified empirically — see the regression tests
+// below). That means `find ~/.ssh -type f\nrm -rf ~/.ssh` reaches
+// isReadOnlySegment as a SINGLE unsplit segment whose args[0] is "find" with
+// no mutating primary of its own, reopening the exact args[0]-flattening bug
+// the &&/;/|/|| fix above closed — just via an operator that never becomes a
+// token in the first place, so there is nothing for splitOnOps to catch.
+//
+// Since there is no token-level fix available for this case, fail closed
+// instead: withhold the read-only exemption whenever the raw command string
+// contains a newline that is NOT inside a quoted string, followed by further
+// non-whitespace content (a trailing/leading blank line alone is harmless).
+// The quote-tracking here is a cheap best-effort scan (single/double quotes,
+// backslash-escapes outside single quotes), not a full shell grammar parse —
+// consistent with the other "cheap positional heuristic" trade-offs already
+// documented in this file (e.g. FIND_VALUE_FLAGS) — but it correctly leaves
+// an intentionally-quoted multi-line argument alone while still catching the
+// unquoted-separator case that actually chains two commands together.
+function hasUnquotedNewlineWithContent(command: string): boolean {
+    let inSingle = false;
+    let inDouble = false;
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i];
+        if (ch === "\\" && !inSingle) {
+            i++; // skip the escaped character (backslash has no special meaning inside '...')
+            continue;
+        }
+        if (ch === "'" && !inDouble) {
+            inSingle = !inSingle;
+            continue;
+        }
+        if (ch === '"' && !inSingle) {
+            inDouble = !inDouble;
+            continue;
+        }
+        if ((ch === "\n" || ch === "\r") && !inSingle && !inDouble) {
+            if (/\S/.test(command.slice(i + 1))) return true;
+        }
+    }
+    return false;
+}
+
 export function isReadOnlyBashCommand(command: string): boolean {
-    return READ_ONLY_CMDS.test(command);
+    if (!READ_ONLY_CMDS.test(command)) return false;
+
+    // Fail closed on unquoted newline-separated commands — see
+    // hasUnquotedNewlineWithContent above for why this can't be handled via
+    // splitOnOps like the other separators.
+    if (hasUnquotedNewlineWithContent(command)) return false;
+
+    let tokens: Token[];
+    try {
+        tokens = shellParse(command) as Token[];
+    } catch {
+        // Unparseable command (heredocs, process substitutions, etc.) — can't
+        // safely inspect find/fd arguments for mutating primaries/flags, so
+        // don't grant the read-only exemption on unverified trust.
+        return false;
+    }
+
+    // A compound command (chained with &&/;/;;/||/&/|/|&) is only read-only
+    // if EVERY segment independently qualifies as read-only. Splitting first
+    // and classifying each segment by its OWN leading command closes several
+    // bypasses that classifying the whole flattened token stream by a single
+    // args[0] was vulnerable to:
+    //
+    //   - Chaining: `ls ~/.ssh && find ~/.ssh -delete` — an innocuous
+    //     leading segment (`ls`) made args[0] === "ls" for the *entire*
+    //     command, so the find-mutating-primary check on the trailing
+    //     `find ... -delete` segment never ran.
+    //   - Piping: `find ~/.ssh -type f | xargs rm` — piping a clean-looking
+    //     find into an external mutating command has none of find's own
+    //     mutating primaries, so a whole-command check would miss it.
+    //   - Backgrounding: `ls ~/.ssh & find ~/.ssh -delete` — same
+    //     args[0]-flattening bug as chaining, just via "&" instead of "&&"/
+    //     ";" (code-reviewer REJECT finding — "&" was parsed into its own op
+    //     token by shell-quote but was missing from this split list).
+    //
+    // The split list below is the full set of shell-quote CONTROL operators
+    // that can chain/separate distinct commands (verified against
+    // shell-quote's own parse.js CONTROL regex: ||, &&, ;;, |&, &, ;, |).
+    // Redirection operators (>, >>, <, <<<, <&, >&, <() ) are deliberately
+    // excluded — they don't start a new command, they redirect the CURRENT
+    // one. NOTE: this does NOT mean redirects are hard-blocked elsewhere.
+    // analyzeBashCommand flags output redirection (>, >>, 2>) as a
+    // promptable "medium" risk, but that is a UI confirmation prompt only —
+    // it is skipped entirely in headless/non-interactive execution when the
+    // `bash-guard-auto-allow` flag is set (the common subagent execution
+    // path; see the tool_call handler below), and tokensToStrings here
+    // strips redirect operators without them ever disqualifying a command
+    // from the read-only exemption. So `cat payload > ~/.ssh/authorized_keys`
+    // style commands are NOT hard-blocked by this protected-path check in
+    // that mode. This is a pre-existing gap (predates this fix, and existed
+    // identically in the old bare-regex classifier) — tracked as a separate
+    // backlog item, not addressed here.
+    //
+    // "(" and ")" (subshell grouping) are also excluded from this list on
+    // purpose: they're already stripped out of `args` by
+    // tokensToStrings regardless of where a segment boundary falls, so a
+    // segment like `(ls ~/.ssh)` still yields args === ["ls", "~/.ssh"] and
+    // cmd === "ls" correctly — there is no args[0]-flattening bug for parens
+    // themselves to close, once the real separators around them are split.
+    //
+    // NOT covered by this list (documented, separate limitation — not an
+    // "operator missing from the list" bug, and out of scope for this fix):
+    // command substitution (`$(...)`/backtick). shell-quote flattens a
+    // substitution's inner tokens into the SAME segment as the outer command
+    // without any boundary marker distinguishing "nested inside a
+    // substitution" from "a sibling top-level word" — e.g. `cat $(rm -rf
+    // ~/.ssh; echo /etc/hosts)` parses to a token stream where the nested
+    // ";" looks identical to a top-level one, splitting it produces a
+    // leading segment whose args[0] is still "cat" (the OUTER command), and
+    // the embedded `rm -rf` never surfaces as its own segment at all. This
+    // is a structurally different bug (indistinguishable nesting depth, not
+    // a missing split token) that splitOnOps cannot fix by adding more
+    // operators to its list; closing it would need subshell-depth-aware
+    // tokenization. Flagged for follow-up rather than patched here.
+    //
+    // Process substitution (`<(...)`/`>(...)`) hits this identical flattening
+    // bug for the same structural reason (shell-quote doesn't mark
+    // subshell-nesting boundaries) — noted here as a distinct known gap so
+    // it isn't lost, also out of scope for this fix.
+    const segments = splitOnOps(tokens, ["&&", ";", "|", "||", "&", ";;", "|&"]);
+    if (segments.length === 0) return false;
+
+    return segments.every(isReadOnlySegment);
 }
 
 // Checks whether a bash command textually references a given absolute path,

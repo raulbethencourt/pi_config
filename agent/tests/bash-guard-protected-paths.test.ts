@@ -396,3 +396,332 @@ describe("commandReferencesPath", () => {
     expect(commandReferencesPath("echo hello", `${HOME}/.ssh`)).toBe(false);
   });
 });
+
+// ── find/fd bare-name read-only classification — protected-path bypass
+// (FIXED, documented at index.ts lines 734-741 above READ_ONLY_CMDS) ──────
+//
+// READ_ONLY_CMDS classifies any command starting with `find` or `fd` as
+// unconditionally read-only via a bare command-name regex, with zero
+// inspection of the command's own arguments by itself. Since this
+// classification feeds directly into findBlockedProtectedFolderReference's
+// read-only exemption (and, in index.ts's default export, the analogous
+// PROTECTED_WRITE_ONLY_FILES / PROTECTED_PATH_PATTERNS bash-guard check
+// gated by the same `!isReadOnlyBashCommand(command)` condition), a
+// destructive `find`/`fd` invocation against a protected path — using
+// -delete, -exec, -execdir, -fprintf, -fprint, -fprint0, -fls, -ok, or
+// -okdir — would sail straight through the hard block instead of being
+// caught by it, if READ_ONLY_CMDS were the only gate.
+//
+// These tests assert the CORRECT behavior. isReadOnlySegment/
+// hasFindMutatingPrimary (and their fd equivalents) close this gap by
+// parsing find/fd's own arguments and withholding the exemption when a
+// mutating primary/flag is present, so the assertions below now PASS
+// (GREEN) against the current implementation.
+
+describe("find/fd bare-name read-only classification — protected-path bypass (fixed)", () => {
+  it("does NOT treat `find <protected-dir> -delete` as read-only", () => {
+    expect(isReadOnlyBashCommand(`find ${HOME}/.ssh -delete`)).toBe(false);
+  });
+
+  it("does NOT treat `find <protected-file> -exec rm {} \\;` as read-only", () => {
+    expect(
+      isReadOnlyBashCommand(`find ${HOME}/.pi/agent/auth.json -exec rm {} \\;`),
+    ).toBe(false);
+  });
+
+  it("hard-blocks `find ~/.ssh -delete` via findBlockedProtectedFolderReference", () => {
+    const command = `find ${HOME}/.ssh -delete`;
+    expect(findBlockedProtectedFolderReference(command)).not.toBeNull();
+  });
+
+  it("hard-blocks `find ~/.pi/agent/auth.json -exec rm {} \\;` (credential file, never exempt)", () => {
+    const command = `find ${HOME}/.pi/agent/auth.json -exec rm {} \\;`;
+    const blocked = findBlockedProtectedFolderReference(command);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.allowReadOnlyBashExemption).toBe(false);
+  });
+
+  it("hard-blocks `find ~/.ssh -execdir chmod 777 {} \\;`", () => {
+    expect(
+      findBlockedProtectedFolderReference(`find ${HOME}/.ssh -execdir chmod 777 {} \\;`),
+    ).not.toBeNull();
+  });
+
+  it("hard-blocks `find ~/personal -ok rm {} \\;`", () => {
+    expect(
+      findBlockedProtectedFolderReference(`find ${HOME}/personal -ok rm {} \\;`),
+    ).not.toBeNull();
+  });
+
+  it("hard-blocks `find ~/secure -okdir rm {} \\;`", () => {
+    expect(
+      findBlockedProtectedFolderReference(`find ${HOME}/secure -okdir rm {} \\;`),
+    ).not.toBeNull();
+  });
+
+  it("hard-blocks `find ~/Documents -fprintf out.txt %p`", () => {
+    expect(
+      findBlockedProtectedFolderReference(`find ${HOME}/Documents -fprintf out.txt %p`),
+    ).not.toBeNull();
+  });
+
+  // -fprint/-fprint0/-fls are the same "write matched output to a file"
+  // family as -fprintf above, and were initially missed from
+  // FIND_MUTATING_PRIMARIES when -fprintf was added — closing that gap here.
+  it("does NOT treat `find <protected-dir> -fprint <file>` as read-only", () => {
+    expect(
+      isReadOnlyBashCommand(`find ${HOME}/.ssh -fprint ${HOME}/.ssh/authorized_keys`),
+    ).toBe(false);
+  });
+
+  it("hard-blocks `find ~/.ssh -fprint ~/.ssh/authorized_keys`", () => {
+    expect(
+      findBlockedProtectedFolderReference(
+        `find ${HOME}/.ssh -fprint ${HOME}/.ssh/authorized_keys`,
+      ),
+    ).not.toBeNull();
+  });
+
+  it("hard-blocks `find ~/.ssh -fprint0 out.txt`", () => {
+    expect(
+      findBlockedProtectedFolderReference(`find ${HOME}/.ssh -fprint0 out.txt`),
+    ).not.toBeNull();
+  });
+
+  it("hard-blocks `find ~/Documents -fls out.txt`", () => {
+    expect(
+      findBlockedProtectedFolderReference(`find ${HOME}/Documents -fls out.txt`),
+    ).not.toBeNull();
+  });
+
+  it("hard-blocks an `fd --exec` invocation targeting a protected folder", () => {
+    expect(
+      findBlockedProtectedFolderReference(`fd --exec rm {} \\; -- . ${HOME}/.ssh`),
+    ).not.toBeNull();
+  });
+
+  it("does NOT treat a bundled `fd -Hx` short flag as read-only and hard-blocks it", () => {
+    const command = `fd -Hx rm -rf ${HOME}/.ssh \\;`;
+    expect(isReadOnlyBashCommand(command)).toBe(false);
+    expect(findBlockedProtectedFolderReference(command)).not.toBeNull();
+  });
+
+  it("still treats `fd -tx .` (fd's own shorthand for --type executable) as read-only", () => {
+    // Regression: a naive scan for x/X anywhere in the token wrongly matched
+    // this, since -t is fd's value-taking --type flag and "x" here is its
+    // attached value (executable), not a bundled -x/--exec flag.
+    expect(isReadOnlyBashCommand("fd -tx .")).toBe(true);
+  });
+
+  it("still treats `fd -eXML .` (attached-value form of -e XML) as read-only", () => {
+    // Regression: -e/--extension is value-taking; "XML" is its attached
+    // value and happens to contain an X, which a naive scan would wrongly
+    // flag as -X/--exec-batch.
+    expect(isReadOnlyBashCommand("fd -eXML .")).toBe(true);
+  });
+});
+
+// ── isReadOnlyBashCommand — chaining bypass (code-reviewer REJECT finding) ──
+// The previous implementation flattened all tokens across &&/;/| into one
+// array and only inspected args[0] (the first token of the WHOLE compound
+// command). `ls ~/.ssh && find ~/.ssh -delete` had args[0] === "ls", so the
+// find-mutating-primary check on the trailing segment never ran and the
+// entire compound command was wrongly classified read-only. Fixed by
+// splitting on &&/;/|/|| first and requiring every segment to independently
+// qualify as read-only.
+
+describe("isReadOnlyBashCommand — chaining bypass (regression)", () => {
+  it("does NOT treat an innocuous leading segment hiding a mutating find as read-only (&&)", () => {
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh && find ${HOME}/.ssh -delete`)).toBe(false);
+  });
+
+  it("does NOT treat an innocuous leading segment hiding a mutating find as read-only (;)", () => {
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh; find ${HOME}/.ssh -delete`)).toBe(false);
+  });
+
+  it("hard-blocks the chained command via findBlockedProtectedFolderReference", () => {
+    const command = `ls ${HOME}/.ssh && find ${HOME}/.ssh -delete`;
+    const blocked = findBlockedProtectedFolderReference(command);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.path).toBe(`${HOME}/.ssh`);
+  });
+
+  it("still treats an all-read-only chain as read-only (no over-blocking)", () => {
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh && cat ${HOME}/.ssh/config`)).toBe(true);
+  });
+});
+
+// ── isReadOnlyBashCommand — piping bypass (code-reviewer REJECT finding) ──
+// Even when cmd === "find", the previous implementation only checked find's
+// OWN primaries (-delete, -exec, etc.). Piping a clean-looking find into an
+// external mutating command (e.g. `find ~/.ssh -type f | xargs rm`) has none
+// of those primaries, so it was wrongly classified read-only despite deleting
+// every matched file downstream. Fixed by splitting on "|" as well, and
+// requiring the downstream segment to independently qualify as read-only —
+// there is no exemption for "the find segment itself looked clean".
+
+describe("isReadOnlyBashCommand — piping bypass (regression)", () => {
+  it("does NOT treat find piped into an external mutating command as read-only", () => {
+    expect(isReadOnlyBashCommand(`find ${HOME}/.ssh -type f | xargs rm`)).toBe(false);
+  });
+
+  it("hard-blocks `find ~/.ssh -type f | xargs rm` via findBlockedProtectedFolderReference", () => {
+    const command = `find ${HOME}/.ssh -type f | xargs rm`;
+    const blocked = findBlockedProtectedFolderReference(command);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.path).toBe(`${HOME}/.ssh`);
+  });
+
+  it("does NOT treat find piped into a shell as read-only", () => {
+    expect(isReadOnlyBashCommand(`find ${HOME}/.ssh -type f | sh`)).toBe(false);
+  });
+
+  it("still treats find piped into a genuinely read-only command as read-only (no over-blocking)", () => {
+    expect(isReadOnlyBashCommand(`find ${HOME}/.ssh -type f | wc -l`)).toBe(true);
+  });
+});
+
+// ── isReadOnlyBashCommand — false-positive reduction for literal filename
+// arguments that happen to equal a mutating primary's spelling (minor,
+// non-blocking finding from the code-reviewer) ──────────────────────────
+
+describe("isReadOnlyBashCommand — reduced false positive on literal -exec-like filename patterns", () => {
+  it("treats `find . -iname -exec` as read-only (literal pattern argument to -iname, not a primary)", () => {
+    expect(isReadOnlyBashCommand("find . -iname -exec")).toBe(true);
+  });
+});
+
+// ── isReadOnlyBashCommand — glob-adjacent mutating primary bypass
+// (code-reviewer-deep BLOCKER finding, pre-commit review of the
+// FIND_VALUE_FLAGS lookback fix) ─────────────────────────────────────────
+// hasFindMutatingPrimary's lookback used to run against tokensToStrings'
+// output, which DROPS non-string tokens (shell-quote parses an unquoted glob
+// like `*` into an {op:"glob",...} token, not a plain string) before the
+// lookback ever sees the array. That silently closed the positional gap
+// between a value-taking flag (-name/-iname/-path/...) and a REAL mutating
+// primary that happens to follow an unquoted glob, e.g.
+// `find ~/.ssh -name * -delete` parses to
+// ["find","~/.ssh","-name",{op:"glob",pattern:"*"},"-delete"]; stripping the
+// glob token collapsed that to ["find","~/.ssh","-name","-delete"], making
+// "-delete" look like -name's own literal argument (correctly excused by
+// FIND_VALUE_FLAGS) instead of the real mutating primary it is — letting the
+// command sail straight through the protected-path hard block. Fixed by
+// scanning a positional array that keeps a placeholder in the glob's slot
+// instead of dropping it, so real adjacency is preserved.
+
+describe("isReadOnlyBashCommand — glob-adjacent mutating primary bypass (regression)", () => {
+  it("does NOT treat `find ~/.ssh -name * -delete` as read-only (glob masking -name/-delete adjacency)", () => {
+    expect(isReadOnlyBashCommand(`find ${HOME}/.ssh -name * -delete`)).toBe(false);
+  });
+
+  it("hard-blocks `find ~/.ssh -name * -delete` via findBlockedProtectedFolderReference", () => {
+    const command = `find ${HOME}/.ssh -name * -delete`;
+    const blocked = findBlockedProtectedFolderReference(command);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.path).toBe(`${HOME}/.ssh`);
+  });
+
+  it("does NOT treat `find ~/.ssh -iname * -exec rm {} \\;` as read-only (glob masking -iname/-exec adjacency)", () => {
+    expect(
+      isReadOnlyBashCommand(`find ${HOME}/.ssh -iname * -exec rm {} \\;`),
+    ).toBe(false);
+  });
+
+  it("does NOT treat `find ~/.ssh -path * -exec rm {} \\;` as read-only (glob masking -path/-exec adjacency)", () => {
+    expect(
+      isReadOnlyBashCommand(`find ${HOME}/.ssh -path * -exec rm {} \\;`),
+    ).toBe(false);
+  });
+
+  it("still treats `find . -iname -exec` as read-only with no glob present (no regression from the positional fix)", () => {
+    expect(isReadOnlyBashCommand("find . -iname -exec")).toBe(true);
+  });
+});
+
+// ── isReadOnlyBashCommand — backgrounding bypass (code-reviewer REJECT
+// finding, 2nd retry cycle) ──────────────────────────────────────────────
+// Same args[0]-flattening bug as the &&/; chaining bypass above, just via
+// "&" (background operator) instead of "&&"/";". shell-quote DOES parse "&"
+// into its own {op:"&"} token, but the previous splitOnOps call list
+// (["&&", ";", "|", "||"]) omitted plain "&", so both sides of the "&" stayed
+// in one flattened segment and cmd === args[0] === "ls" hid the trailing
+// mutating find/rm entirely. Fixed by adding "&" to the split list.
+
+describe("isReadOnlyBashCommand — backgrounding bypass (regression)", () => {
+  it("does NOT treat an innocuous leading segment hiding a mutating find as read-only (&)", () => {
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh & find ${HOME}/.ssh -delete`)).toBe(false);
+  });
+
+  it("does NOT treat an innocuous leading segment hiding rm -rf as read-only (&)", () => {
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh & rm -rf ${HOME}/.ssh`)).toBe(false);
+  });
+
+  it("hard-blocks the backgrounded command via findBlockedProtectedFolderReference", () => {
+    const command = `ls ${HOME}/.ssh & find ${HOME}/.ssh -delete`;
+    const blocked = findBlockedProtectedFolderReference(command);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.path).toBe(`${HOME}/.ssh`);
+  });
+
+  it("still treats an all-read-only backgrounded pair as read-only (no over-blocking)", () => {
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh & cat ${HOME}/.ssh/config`)).toBe(true);
+  });
+});
+
+// ── isReadOnlyBashCommand — newline-separated commands bypass (code-reviewer
+// REJECT finding, 2nd retry cycle) ───────────────────────────────────────
+// shell-quote's parse() does not emit ANY op token for a bare newline between
+// two commands — it flattens straight into one continuous token array with
+// no operator marker whatsoever, so splitOnOps has nothing to split on for
+// this case regardless of which ops are in its list. This is not an obscure
+// edge case: multi-line bash tool calls are a common, ordinary shape. Fixed
+// by failing closed (treating the command as non-read-only) whenever the raw
+// command string contains an unquoted newline followed by further
+// non-whitespace content.
+
+describe("isReadOnlyBashCommand — newline-separated commands bypass (regression)", () => {
+  it("does NOT treat a newline-separated mutating find as read-only (\\n)", () => {
+    expect(isReadOnlyBashCommand(`find ${HOME}/.ssh -type f\nrm -rf ${HOME}/.ssh`)).toBe(false);
+  });
+
+  it("does NOT treat a CRLF-separated mutating command as read-only (\\r\\n)", () => {
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh\r\nrm -rf ${HOME}/.ssh`)).toBe(false);
+  });
+
+  it("hard-blocks the newline-separated command via findBlockedProtectedFolderReference", () => {
+    const command = `find ${HOME}/.ssh -type f\nrm -rf ${HOME}/.ssh`;
+    const blocked = findBlockedProtectedFolderReference(command);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.path).toBe(`${HOME}/.ssh`);
+  });
+
+  it("fails closed even on an all-read-only newline-separated pair (accepted over-blocking trade-off — there is no per-line splitting to verify each side independently, unlike &&/;/&)", () => {
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh\ncat ${HOME}/.ssh/config`)).toBe(false);
+  });
+
+  it("does not over-block on a harmless trailing blank line with no further content", () => {
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh\n`)).toBe(true);
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh\n  \n`)).toBe(true);
+  });
+});
+
+// ── isReadOnlyBashCommand — additional chain-separator operators shell-quote
+// surfaces as op tokens (self-check for the same bug class as "&" above) ──
+// shell-quote's own CONTROL regex (parse.js) recognizes ";;" (case-statement
+// terminator) and "|&" (bash's pipe-stdout-and-stderr shorthand) as distinct
+// op tokens, same as "&". Neither was in the previous splitOnOps list either,
+// so both were vulnerable to the identical args[0]-flattening bug.
+
+describe("isReadOnlyBashCommand — other chain-separator operators (;; and |&) (regression)", () => {
+  it("does NOT treat a ;;-separated mutating find as read-only", () => {
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh ;; find ${HOME}/.ssh -delete`)).toBe(false);
+  });
+
+  it("does NOT treat a |&-separated mutating command as read-only", () => {
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh |& rm -rf ${HOME}/.ssh`)).toBe(false);
+  });
+
+  it("still treats an all-read-only ;;-separated pair as read-only (no over-blocking)", () => {
+    expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh ;; cat ${HOME}/.ssh/config`)).toBe(true);
+  });
+});
