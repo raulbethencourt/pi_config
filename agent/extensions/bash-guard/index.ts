@@ -6,6 +6,8 @@ import {
 import type { SelectItem } from "@mariozechner/pi-tui";
 import { Container, SelectList, Text } from "@mariozechner/pi-tui";
 import { parse as shellParse } from "shell-quote";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 export type Severity = "high" | "medium";
 
@@ -670,20 +672,247 @@ const HEADLESS_BLOCKED: Array<{ pattern: RegExp; reason: string }> = [
 // These directories are completely off-limits for write operations.
 // No agent, no bypass, no escape hatch. Hard-block always.
 const HOME = process.env.HOME || "/home/rabeta";
-const PROTECTED_FOLDERS = [
-    `${HOME}/.ssh`,
-    `${HOME}/personal`,
-    `${HOME}/secure`,
-    `${HOME}/Documents`,
+
+// Per-entry bash-layer policy: whether a command that *looks* read-only
+// (see READ_ONLY_CMDS/isReadOnlyBashCommand below) is still allowed to
+// merely reference this path without a hard block.
+//
+// - Directories (~/.ssh, ~/personal, ~/secure, ~/Documents) predate the two
+//   credential-file entries below and keep the original, deliberate
+//   usability trade-off: they can hold a mix of sensitive and merely
+//   incidental files (e.g. ~/.ssh/config, ~/.ssh/known_hosts), so routine
+//   inspection (`ls ~/.ssh`, `cat ~/.ssh/config`) is allowed through at the
+//   bash layer while mutation is still hard-blocked. Changing this now would
+//   be an unrelated behavior change outside this fix's scope.
+// - The two credential files (agent/auth.json, ~/.npmrc) are single files
+//   whose *entire content* is a secret — there is no partial "reading this
+//   file is fine, only writing it isn't" case, unlike a mixed-content
+//   directory. Their whole stated purpose (see the Read-tool block reason
+//   text below: "no read, no write") is to be fully blocked including reads,
+//   so they must NEVER receive the read-only-command exemption; doing so
+//   would let a plain `cat ~/.pi/agent/auth.json` sail through untouched via
+//   the bash tool even though the Read tool correctly blocks the same file.
+type ProtectedFolderEntry = {
+    path: string;
+    allowReadOnlyBashExemption: boolean;
+};
+
+const PROTECTED_FOLDER_ENTRIES: ProtectedFolderEntry[] = [
+    { path: `${HOME}/.ssh`, allowReadOnlyBashExemption: true },
+    { path: `${HOME}/personal`, allowReadOnlyBashExemption: true },
+    { path: `${HOME}/secure`, allowReadOnlyBashExemption: true },
+    { path: `${HOME}/Documents`, allowReadOnlyBashExemption: true },
+    { path: `${HOME}/.pi/agent/auth.json`, allowReadOnlyBashExemption: false },
+    { path: `${HOME}/.npmrc`, allowReadOnlyBashExemption: false },
 ];
+
+const PROTECTED_FOLDERS = PROTECTED_FOLDER_ENTRIES.map((e) => e.path);
 
 export function isProtectedPath(filePath: string): boolean {
     // Resolve ~ to HOME
-    const resolved = filePath.startsWith("~")
+    const expanded = filePath.startsWith("~")
         ? filePath.replace(/^~/, HOME)
         : filePath;
-    return PROTECTED_FOLDERS.some(
-        (folder) => resolved === folder || resolved.startsWith(folder + "/"),
+    // Also resolve symlinks: a symlink placed at an arbitrary, non-matching
+    // path can point at a protected file/folder, so the literal-string check
+    // alone can be bypassed. Check both the literal (expanded) path and its
+    // resolved real form.
+    const resolved = resolveRealPathBestEffort(expanded);
+    const matchesFolder = (candidate: string) =>
+        PROTECTED_FOLDERS.some(
+            (folder) => candidate === folder || candidate.startsWith(folder + "/"),
+        );
+    return matchesFolder(expanded) || matchesFolder(resolved);
+}
+
+// Purely read-only commands are allowed to merely reference a protected path
+// (e.g. `ls ~/.ssh`) without triggering a hard block — only mutation is
+// blocked. This exemption is applied selectively per PROTECTED_FOLDER_ENTRIES
+// entry (see allowReadOnlyBashExemption above), not blanket across all of
+// PROTECTED_FOLDERS.
+//
+// KNOWN GAP (deferred, not fixed here): find/fd are matched here as
+// unconditionally read-only via a bare command-name prefix, with no
+// inspection of their arguments — a command like `find <path> -delete` or
+// `find <path> -exec rm {} \;` is still classified read-only by this regex
+// and bypasses the bash-layer protected-path block entirely, for every
+// PROTECTED_FOLDER_ENTRIES entry (old and new). Tracked separately in
+// pi-improvement-plan.md; out of scope for this fix.
+const READ_ONLY_CMDS = /^\s*(ls|cat|file|stat|wc|head|tail|less|more|tree|find|grep|rg|fd|bat)\b/;
+
+export function isReadOnlyBashCommand(command: string): boolean {
+    return READ_ONLY_CMDS.test(command);
+}
+
+// Checks whether a bash command textually references a given absolute path,
+// in either its absolute or `~`-shorthand form.
+export function commandReferencesPath(command: string, absolutePath: string): boolean {
+    const tildeForm = absolutePath.replace(HOME, "~");
+    return command.includes(absolutePath) || command.includes(tildeForm);
+}
+
+// Decides whether a bash command should be hard-blocked for referencing a
+// PROTECTED_FOLDER_ENTRIES path, honoring each entry's own
+// allowReadOnlyBashExemption flag (directories keep the original read-only
+// exemption; the two single-file credential entries never get it — see the
+// rationale comment above PROTECTED_FOLDER_ENTRIES). Returns the matching
+// entry so the caller can build an accurate block reason, or null if the
+// command isn't blocked by this check.
+export function findBlockedProtectedFolderReference(
+    command: string,
+): ProtectedFolderEntry | null {
+    for (const entry of PROTECTED_FOLDER_ENTRIES) {
+        const isExempt =
+            entry.allowReadOnlyBashExemption && isReadOnlyBashCommand(command);
+        if (commandReferencesPath(command, entry.path) && !isExempt) {
+            return entry;
+        }
+    }
+    return null;
+}
+
+// ── Write-only protected files (block write/edit + mutating bash; reads allowed) ──
+// Shell rc files and the user's global git config: blocking reads would break
+// normal shell/git usage and introspection, but agents should never be able
+// to silently rewrite a user's shell startup files or global git config
+// (which applies across every repo on the machine, unlike a repo-local
+// .git/config).
+const PROTECTED_WRITE_ONLY_FILES = [
+    `${HOME}/.bashrc`,
+    `${HOME}/.zshrc`,
+    `${HOME}/.bash_profile`,
+    `${HOME}/.zprofile`,
+    `${HOME}/.profile`,
+    `${HOME}/.gitconfig`,
+];
+
+// Repo-relative git internals that must never be rewritten by an agent:
+// hooks (arbitrary code execution on git operations) and config (git config
+// can smuggle in dangerous settings like core.hooksPath, core.sshCommand,
+// url.*.insteadOf, or alias.* — writes to the file are blocked outright
+// rather than trying to parse individual mutations out of a command string).
+// Case-insensitive: case-insensitive filesystems (macOS default, Windows)
+// would otherwise let a differently-cased path (".GIT/hooks/...") slip through.
+//
+// Leading boundary: these patterns are applied both to resolved file-path
+// arguments (Write/Edit tool calls, where `.git` only ever appears after a
+// path separator or at the very start of the string) AND directly against
+// raw bash command strings (`pattern.test(command)`, below). In a raw
+// command, `.git/hooks` can just as easily be preceded by whitespace or a
+// shell operator/redirect/quote — e.g. `echo x > .git/hooks/pre-commit` or
+// `chmod +x .git/hooks/post-checkout` — where the character right before
+// `.git` is a space or `>`, not `/` or start-of-string. Anchoring on
+// `(^|\/)` alone silently never matches that (extremely common) shape.
+// What the leading boundary actually needs to rule out is `.git` being a
+// *suffix* of some other, unrelated identifier (e.g. a bare-repo directory
+// literally named `myrepo.git`, where `.git` is part of that directory's
+// own name rather than its own path segment) — not "must be exactly `/` or
+// nothing". A negative lookbehind for a word/path character (letters,
+// digits, underscore, dot, hyphen) captures that: it still excludes
+// `myrepo.git/hooks`, but now also matches after whitespace, shell
+// operators (`>`, `>>`, `|`, `;`, `&&`, `||`), and quotes, since none of
+// those characters are in the excluded set.
+export const PROTECTED_PATH_PATTERNS = [
+    /(?<![\w.-])\.git\/hooks(\/|$)/i,
+    /(?<![\w.-])\.git\/config(\.lock)?$/i,
+];
+
+// Resolves a filesystem path to its canonical real form, following symlinks,
+// so a symlink pointing at a protected path can't be used to bypass literal
+// path-string matching. Handles two distinct "doesn't fully exist" cases:
+//
+//   1. A path (or trailing segments of it) that simply doesn't exist yet —
+//      e.g. a new file about to be created inside an existing directory.
+//      `fs.realpathSync` throws ENOENT for this; we resolve the deepest
+//      existing ancestor and rebuild the missing trailing segments on top
+//      of it.
+//   2. A symlink whose declared target doesn't (fully) exist yet — e.g. a
+//      freshly created symlink at /tmp/x pointing at .git/hooks/newfile,
+//      where newfile has never been created. `fs.realpathSync` ALSO throws
+//      ENOENT here (it fails if any component of the final resolved path is
+//      missing, even if the symlink itself exists), so it's not enough to
+//      just walk up dirname() of the *original* input path — that never
+//      follows the symlink and silently falls back to the symlink's own
+//      location. Instead, when realpathSync fails we check via
+//      `fs.lstatSync` whether the current path is itself a symlink, and if
+//      so follow its declared target (via `fs.readlinkSync`, resolving
+//      relative targets against the symlink's own containing directory)
+//      before falling back to the "missing ancestor" walk. This is done
+//      recursively (a symlink can point at another symlink), capped to
+//      avoid spinning forever on a symlink cycle.
+const MAX_SYMLINK_HOPS = 40;
+
+function resolveRealPathBestEffort(filePath: string): string {
+    let current = path.resolve(filePath);
+    const missingSuffix: string[] = [];
+    let hops = 0;
+    while (true) {
+        try {
+            const real = fs.realpathSync(current);
+            return missingSuffix.length
+                ? path.join(real, ...missingSuffix.reverse())
+                : real;
+        } catch {
+            let lst: fs.Stats | undefined;
+            try {
+                lst = fs.lstatSync(current);
+            } catch {
+                lst = undefined;
+            }
+
+            if (lst?.isSymbolicLink() && hops < MAX_SYMLINK_HOPS) {
+                // `current` exists as a symlink but realpathSync couldn't
+                // fully resolve it (its target doesn't exist yet, possibly
+                // several hops down). Follow the link ourselves instead of
+                // giving up and walking up the *symlink's own* location.
+                hops++;
+                const target = fs.readlinkSync(current);
+                current = path.isAbsolute(target)
+                    ? target
+                    : path.join(path.dirname(current), target);
+                continue;
+            }
+
+            // `current` doesn't exist at all (or isn't a symlink we can
+            // follow further) — climb to the parent and retry, tracking the
+            // missing trailing segment so it can be rebuilt on the deepest
+            // existing (and now fully symlink-resolved) ancestor.
+            const parent = path.dirname(current);
+            if (parent === current) return path.resolve(filePath); // reached root; nothing exists
+            missingSuffix.push(path.basename(current));
+            current = parent;
+        }
+    }
+}
+
+// Lower-cased once so the exact-string check below can be case-insensitive,
+// matching the `i` flag already used on PROTECTED_PATH_PATTERNS. Rationale:
+// on a case-insensitive filesystem (macOS default, Windows), `~/.BASHRC` and
+// `~/.bashrc` are the SAME on-disk file — `resolveRealPathBestEffort` only
+// normalizes case for path segments that already exist, so a *not-yet-created*
+// rc file (e.g. an agent writing `~/.BASHRC` for the first time) would keep
+// its caller-supplied case and slip past a case-sensitive `.includes()` check,
+// even though the shell would still pick it up via case-insensitive lookup.
+// On Linux (case-sensitive), this could in principle over-block a genuinely
+// distinct, differently-cased file the user created on purpose — but for a
+// "cannot be bypassed" guard on files whose entire purpose is arbitrary code
+// execution on shell/git startup, an occasional over-cautious block is a far
+// smaller cost than silently missing the real bypass on macOS/Windows.
+const PROTECTED_WRITE_ONLY_FILES_LOWER = PROTECTED_WRITE_ONLY_FILES.map((f) => f.toLowerCase());
+
+export function isProtectedWriteOnlyPath(filePath: string): boolean {
+    const expanded = filePath.startsWith("~")
+        ? filePath.replace(/^~/, HOME)
+        : filePath;
+    const resolved = resolveRealPathBestEffort(expanded);
+    if (
+        PROTECTED_WRITE_ONLY_FILES_LOWER.includes(expanded.toLowerCase()) ||
+        PROTECTED_WRITE_ONLY_FILES_LOWER.includes(resolved.toLowerCase())
+    ) {
+        return true;
+    }
+    return PROTECTED_PATH_PATTERNS.some(
+        (pattern) => pattern.test(expanded) || pattern.test(resolved),
     );
 }
 
@@ -730,6 +959,14 @@ export default function(pi: ExtensionAPI) {
                         ". This cannot be bypassed.",
                 };
             }
+            if (path && isProtectedWriteOnlyPath(path)) {
+                return {
+                    block: true,
+                    reason:
+                        `HARD BLOCKED: "${path}" is a protected write-only file (shell rc file or git hooks/config). ` +
+                        "Writes to this file are not permitted. This cannot be bypassed.",
+                };
+            }
         }
 
         // Block edit tool to protected folders
@@ -743,6 +980,14 @@ export default function(pi: ExtensionAPI) {
                         "These directories are completely off-limits: " +
                         PROTECTED_FOLDERS.join(", ") +
                         ". This cannot be bypassed.",
+                };
+            }
+            if (path && isProtectedWriteOnlyPath(path)) {
+                return {
+                    block: true,
+                    reason:
+                        `HARD BLOCKED: "${path}" is a protected write-only file (shell rc file or git hooks/config). ` +
+                        "Edits to this file are not permitted. This cannot be bypassed.",
                 };
             }
         }
@@ -763,21 +1008,71 @@ export default function(pi: ExtensionAPI) {
         }
 
         // Block bash commands that target protected folders
+        //
+        // KNOWN LIMITATION (accepted, documented residual risk — applies to both loops
+        // below: the PROTECTED_FOLDERS loop here and the PROTECTED_WRITE_ONLY_FILES /
+        // PROTECTED_PATH_PATTERNS loop further down):
+        //
+        // `commandReferencesPath` is a best-effort TEXTUAL heuristic — a plain substring
+        // check of the raw bash command string against each protected path. It is NOT a
+        // hard guarantee like the Write/Edit tool-call checks above, which receive an
+        // already-resolved path argument and run it through `resolveRealPathBestEffort`
+        // (symlink-aware, including symlinks whose target doesn't exist yet). This bash
+        // leg does none of that: it does not resolve symlinks, shell variable/tilde
+        // expansion ($HOME, ~ beyond the one literal substitution below), or path
+        // indirection via `cd`. Concretely, `cd <dir> && ln -s auth.json /tmp/x` (splits
+        // the literal path across a `cd`) or `ln -s "$HOME/.pi/agent/auth.json" /tmp/x2`
+        // (uses the $HOME variable rather than the literal expanded string) defeat this
+        // check entirely, with no adversarial cleverness required.
+        //
+        // Genuinely closing this class of gap would require either full shell-semantics
+        // simulation (tried and abandoned for a related git-config-mutation detector
+        // earlier in this same effort, after repeated review rounds kept finding new
+        // bypasses) or OS-level filesystem sandboxing (a separate, larger, explicitly
+        // deferred effort) — both out of scope here. The Write/Edit tool-call path
+        // remains the primary, reliable enforcement mechanism for file-level protection
+        // and is not affected by this limitation; this bash-side check is a secondary,
+        // best-effort layer, consistent with the existing READ_ONLY_CMDS /
+        // compound-command-bypass trade-off already documented for this same mechanism.
         if (isToolCallEventType("bash", event)) {
             const command = event.input.command as string;
-            for (const folder of PROTECTED_FOLDERS) {
-                // Check both the full path and ~ shorthand
-                const tildeForm = folder.replace(HOME, "~");
-                if (command.includes(folder) || command.includes(tildeForm)) {
-                    // Allow purely read-only commands (ls, cat, file, stat, wc, head, tail, less, more, tree)
-                    const READ_ONLY_CMDS = /^\s*(ls|cat|file|stat|wc|head|tail|less|more|tree|find|grep|rg|fd|bat)\b/;
-                    if (!READ_ONLY_CMDS.test(command)) {
+            const blockedEntry = findBlockedProtectedFolderReference(command);
+            if (blockedEntry) {
+                return {
+                    block: true,
+                    reason: blockedEntry.allowReadOnlyBashExemption
+                        ? `HARD BLOCKED: command references protected folder "${blockedEntry.path}". ` +
+                          "These directories are completely off-limits for write operations. " +
+                          "This cannot be bypassed."
+                        : `HARD BLOCKED: command references protected file "${blockedEntry.path}". ` +
+                          "This file is completely off-limits, including reads. " +
+                          "This cannot be bypassed.",
+                };
+            }
+
+            // Block bash commands that mutate protected write-only files
+            // (shell rc files, .git/hooks, .git/config).
+            // Same best-effort textual-heuristic limitation applies here as documented
+            // above the PROTECTED_FOLDERS loop (no symlink/`$HOME`/`~`/`cd`-indirection
+            // resolution) — see that comment for the full rationale and scope.
+            if (!isReadOnlyBashCommand(command)) {
+                for (const file of PROTECTED_WRITE_ONLY_FILES) {
+                    if (commandReferencesPath(command, file)) {
                         return {
                             block: true,
                             reason:
-                                `HARD BLOCKED: command references protected folder "${folder}". ` +
-                                "These directories are completely off-limits for write operations. " +
+                                `HARD BLOCKED: command references protected write-only file "${file}". ` +
                                 "This cannot be bypassed.",
+                        };
+                    }
+                }
+                for (const pattern of PROTECTED_PATH_PATTERNS) {
+                    if (pattern.test(command)) {
+                        return {
+                            block: true,
+                            reason:
+                                "HARD BLOCKED: command references a protected git internal path " +
+                                "(.git/hooks or .git/config). This cannot be bypassed.",
                         };
                     }
                 }

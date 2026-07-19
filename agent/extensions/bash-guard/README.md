@@ -54,6 +54,29 @@ a focused set of catastrophic/unrecoverable operations is hard-blocked with no u
 
 All other commands (including routine git operations) pass through unaffected.
 
+## Known limitations
+
+- **Bash-command path detection is a best-effort textual heuristic, not a hard guarantee.**
+  Whether a bash command references a protected path (`~/.ssh`, `~/personal`, `~/secure`,
+  `~/Documents`, `agent/auth.json`, `~/.npmrc`, the shell rc files, `~/.gitconfig`,
+  `.git/hooks`, `.git/config`) is decided by a plain substring check of the raw command
+  text. It does **not** resolve symlinks, shell variable expansion (`$HOME`), or `~`
+  beyond one literal substitution, and it does not track path indirection across
+  commands. Ordinary shell idioms bypass it with no special effort, e.g.:
+  - `cd ~/.pi/agent && ln -s auth.json /tmp/x` (splits the literal path across a `cd`)
+  - `ln -s "$HOME/.pi/agent/auth.json" /tmp/x2` (uses `$HOME` instead of the literal path)
+  This applies to every protected-path tier listed above, not just the most recently
+  added ones — it's a pre-existing, unresolved property of the bash-detection approach.
+- **The Write/Edit tool-call protection is the reliable enforcement layer.** Unlike the
+  bash-command heuristic, the Write/Edit checks receive an actual resolved path argument
+  and correctly follow symlinks (including symlinks whose target doesn't exist yet) before
+  comparing against protected paths. Treat bash-command detection as a helpful deterrent,
+  and the Write/Edit path as the actual guarantee for file-level protection.
+- Closing the bash-side gap fully would require either full shell-semantics simulation
+  (attempted and abandoned for a related detector during this same effort, after repeated
+  review found new bypasses) or OS-level filesystem sandboxing (a separate, larger,
+  deliberately deferred effort) — both considered out of scope for this heuristic layer.
+
 ## Install
 
 Auto-discovered from `~/.pi/agent/extensions/bash-guard/`. Run `/reload` in pi.
