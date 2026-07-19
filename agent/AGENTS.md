@@ -27,6 +27,10 @@ explicit user confirmation
 
 ## Preferences
 
+- Path-scoped supplementary instructions exist at `agent/rules/*.md` (global) and
+  `<project>/.pi/rules/*.md` (project-local) — they load automatically into context
+  only when a matching file is touched via `read`/`write`/`edit`. See
+  `agent/rules/README.md` for authoring them.
 - Prefer editing existing files over creating new ones
 - Prefer concise responses; skip unnecessary explanations unless asked
 - When unsure about intent, ask before acting

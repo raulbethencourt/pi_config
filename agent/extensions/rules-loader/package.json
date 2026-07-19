@@ -1,0 +1,14 @@
+{
+  "name": "pi-rules-loader",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "picomatch": "^4.0.2"
+  },
+  "devDependencies": {
+    "@types/picomatch": "^4.0.0"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}

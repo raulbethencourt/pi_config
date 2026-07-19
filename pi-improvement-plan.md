@@ -12,32 +12,41 @@ Source documents (full detail behind each item):
 
 ## High priority
 
-### 1. Add a Context7-equivalent MCP server
+### 1. Add a Context7-equivalent MCP server — done
 Pi has no live library/API-docs lookup capability today (`native-web-search`/`websearch` are generic web search, not a curated docs index). Context7 ships a public MCP server (`npx -y @upstash/context7-mcp` or similar) with no Anthropic-account dependency — slot it into `agent/mcp.json` the same way `chrome-devtools`/`github`/`context-mode` are already wired, then add it to `worker`/`debugger`'s `mcpTools` frontmatter. Cheapest, highest-confidence item on this list.
 
-### 2. Memory housekeeping + size discipline
+**Done.** `context7` entry added to `agent/mcp.json`; wired into `worker`'s and `debugger`'s `mcpTools` frontmatter.
+
+### 2. Memory housekeeping + size discipline — done
 Not a new build — pi's `memory` tool + `context-mode` semantic index are already at or ahead of Claude's `MEMORY.md`. Two concrete actions:
 - Investigate and likely prune the orphaned `.omc/project-memory.json` cache — its producer/consumer extension couldn't be traced in the reviewed code, it's dead config surface.
 - Add a hard size ceiling + escalating-warning discipline to the memory index (mirrors Claude's Auto Memory: `MEMORY.md` loads only its first 200 lines/25KB, with a warn-then-error mechanism pushing detail into separate topic files). Pi's memory index has no such ceiling today and could hit the same bloat failure mode as it grows.
 
-### 3. OS-level sandboxing for the Bash tool
-Not raised by the config diff (neither tool documents this today) — surfaced from Claude Code's own docs. Claude Code sandboxes shell execution at the OS level (Seatbelt on macOS, bubblewrap on Linux/WSL2): default write scope is cwd + temp dir only, network is allowlist-only with per-domain prompt-once-then-remember, and credential files/env vars can be masked (a sentinel value substituted back only when a request reaches an approved host, keeping the raw secret out of process memory/logs). This is orthogonal to which model is driving, so it's directly portable to a local/free-model tool via `bubblewrap` on Linux. The single most concrete safety upgrade on this list.
+**Done.** `.omc/project-memory.json` confirmed dead (zero codebase references) and not referenced anywhere. Size ceiling with warn/error escalation added in `agent/extensions/memory/index.ts` (`MAX_MEMORY_LINES=200`, `MAX_MEMORY_BYTES=25KB`, warn thresholds + truncation).
 
 ---
 
 ## Medium priority
 
-### 4. Package the existing pipeline as one scripted command
+### 4. Package the existing pipeline as one scripted command — done
 `SKILL_REFERENCE.md` already documents the exact scout→planner→critic→worker→review sequence with PROCEED/REVISE/BLOCK gating that Claude's `pilot-explore-plan-critique-execute-review.js` automates as a single call — pi's top-level loop currently has to manually re-issue each phase's `subagent` call in order. Since `subagents/index.ts` already supports a `tasks[]` parallel-dispatch mode and `commands-loader.ts` already supports prompt-template commands, this is a convenience wrapper (a `/pipeline`-style command or small extension), not new orchestration design.
 
-### 5. Path-scoped conditional instruction loading
+**Done.** Landed as a `pipeline` extension packaging scout→planner→critic→worker→codereviewer with PROCEED/REVISE/BLOCK gating (commit `feadfe3`).
+
+### 5. Path-scoped conditional instruction loading — done
 Claude Code supports `.claude/rules/*.md` files with `paths: ["src/api/**/*.ts"]`-style frontmatter — rules that load into context only when the agent touches matching files, instead of every session. This is "conditional CLAUDE.md fragments" and directly addresses instruction-file bloat over time. No equivalent found in pi's inventory — worth adding if pi's AGENTS.md/SYSTEM.md-equivalent files grow large.
 
-### 6. Fixed "protected paths never auto-approved" list
+**Done.** Landed as the `rules-loader` extension (`agent/extensions/rules-loader/`), hooking `tool_result` for `read`/`write`/`edit` calls and merging global (`~/.pi/agent/rules/*.md`) with project-local (`<project>/.pi/rules/*.md`, using pi's own `CONFIG_DIR_NAME` convention rather than Claude's `.claude/rules`) rule files, project taking precedence on same-basename collisions. Dedup is per-session via `${ruleId}::${absoluteFilePath}` composite keys, so a rule reminds again per distinct matching file rather than going silent after its first match. Known limitation: this injects into `tool_result` content (ordinary tool output), not system-prompt/context space the way Claude Code's own mechanism does, so the model may weight it as tool output rather than a hard directive — see `agent/extensions/rules-loader/README.md` for the full rationale and mitigation.
+
+### 6. Fixed "protected paths never auto-approved" list — done
 Claude Code maintains a fixed list of paths (`.git`, `.claude`, shell rc files, `.npmrc`, `.mcp.json`, etc.) that are never auto-approved regardless of permission mode, short of full bypass. Cheap, high-value guardrail — protects the agent's own config and VCS state even under a fully-trusting/autonomous run. Check whether pi's `bash-guard`/`trust.json` already covers this, or only covers test-file immutability and named protected folders.
 
-### 7. Add a `code-simplifier`-tier persona
+**Done.** `PROTECTED_FOLDER_ENTRIES`, `PROTECTED_WRITE_ONLY_FILES` (`.bashrc`, `.zshrc`, `.gitconfig`, `.npmrc`, `auth.json`), and `PROTECTED_PATH_PATTERNS` (`.git/hooks`, `.git/config`) added to `agent/extensions/bash-guard/index.ts` (commit `cf52f62`). Hard-block bypasses found during review were fixed under item #15.
+
+### 7. Add a `code-simplifier`-tier persona — partially done
 The one confirmed roster drift since pi's 14 agents were ported from Claude: pi's `refactorer` handles explicit, potentially broad-scope refactors, but there's no narrow "polish what was just written for clarity/consistency, default to recently-modified code" role distinct from that. Low cost (one more persona `.md` + a routing-table row), moderate value.
+
+**Partially done.** Persona file added at `agent/extensions/subagents/agents/code-simplifier.md` (commit `99fa896`). Still open: confirm it's wired into the actual routing table (delegation matrix / commands-loader), not just present as a standalone file.
 
 ### 8. Add a skill-creator-equivalent meta-tool
 No skill-authoring skill/extension found in pi's inventory. Given pi already has 16 skills and an active skill-development cadence (design-doc backlog in `agent/docs/*.md`), a lightweight scaffolding skill/command (frontmatter template, `SKILL.md` conventions, trigger-description guidance) would reduce friction for adding #7 above and any future skills.
