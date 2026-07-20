@@ -41,18 +41,24 @@ export default function (pi: ExtensionAPI) {
 			if (period !== "all") {
 				const now = new Date();
 				let since: Date;
+				let until: Date | null = null;
 				switch (period) {
 					case "today":
-						since = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+						since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+						until = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
 						break;
 					case "month":
-						since = new Date(now.getFullYear(), now.getMonth(), 1);
+						since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 						break;
 					default: // week
 						since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 				}
 				conditions.push("timestamp >= ?");
 				values.push(since.toISOString());
+				if (until) {
+					conditions.push("timestamp < ?");
+					values.push(until.toISOString());
+				}
 			}
 
 			// Agent filter
@@ -120,7 +126,7 @@ function getGroupColumn(groupBy: string): string | null {
 		case "agent": return "agent";
 		case "model": return "model";
 		case "project": return "cwd";
-		case "day": return "date(timestamp)";
+		case "day": return "date(timestamp, 'utc')";
 		default: return null;
 	}
 }

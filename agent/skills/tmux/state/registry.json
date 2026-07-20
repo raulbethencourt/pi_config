@@ -1,0 +1,73 @@
+{
+  "entries": [
+    {
+      "entry_id": "e-1783519988-931652-6683",
+      "kind": "session",
+      "name": "cc-upgrade",
+      "session": "cc-upgrade",
+      "dir": "",
+      "status": "running",
+      "created_at": "2026-07-08T14:13:08Z"
+    },
+    {
+      "entry_id": "e-1783519991-932281-3347",
+      "kind": "agent",
+      "label": "scout",
+      "session": "cc-upgrade",
+      "script_path": "/home/rabeta/.claude/skills/tmux/run/cc-upgrade-scout.sh",
+      "logfile": "/home/rabeta/.claude/skills/tmux/logs/cc-upgrade-scout.log",
+      "pane_id": "%112",
+      "window_id": "@89",
+      "group": "upgrade",
+      "status": "running",
+      "created_at": "2026-07-08T14:13:11Z"
+    },
+    {
+      "entry_id": "e-1783519991-932281-20615",
+      "kind": "window-group",
+      "session": "cc-upgrade",
+      "group": "upgrade",
+      "window_id": "@89",
+      "created_at": "2026-07-08T14:13:11Z"
+    },
+    {
+      "entry_id": "e-1783519996-932939-814",
+      "kind": "agent",
+      "label": "planner",
+      "session": "cc-upgrade",
+      "script_path": "/home/rabeta/.claude/skills/tmux/run/cc-upgrade-planner.sh",
+      "logfile": "/home/rabeta/.claude/skills/tmux/logs/cc-upgrade-planner.log",
+      "pane_id": "%113",
+      "window_id": "@89",
+      "group": "upgrade",
+      "status": "running",
+      "created_at": "2026-07-08T14:13:16Z"
+    },
+    {
+      "entry_id": "e-1783520002-933959-29708",
+      "kind": "agent",
+      "label": "critic",
+      "session": "cc-upgrade",
+      "script_path": "/home/rabeta/.claude/skills/tmux/run/cc-upgrade-critic.sh",
+      "logfile": "/home/rabeta/.claude/skills/tmux/logs/cc-upgrade-critic.log",
+      "pane_id": "%114",
+      "window_id": "@89",
+      "group": "upgrade",
+      "status": "running",
+      "created_at": "2026-07-08T14:13:22Z"
+    },
+    {
+      "entry_id": "e-1783520008-934899-4463",
+      "kind": "agent",
+      "label": "auditor",
+      "session": "cc-upgrade",
+      "script_path": "/home/rabeta/.claude/skills/tmux/run/cc-upgrade-auditor.sh",
+      "logfile": "/home/rabeta/.claude/skills/tmux/logs/cc-upgrade-auditor.log",
+      "pane_id": "%115",
+      "window_id": "@89",
+      "group": "upgrade",
+      "status": "running",
+      "created_at": "2026-07-08T14:13:28Z"
+    }
+  ]
+}

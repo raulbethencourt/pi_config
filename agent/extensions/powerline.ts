@@ -15,7 +15,6 @@ import {
     type ExtensionContext,
     type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { EditorTheme, TUI } from "@mariozechner/pi-tui";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { basename } from "node:path";
@@ -26,7 +25,7 @@ type UiTheme = ExtensionContext["ui"]["theme"];
 // ── Icons (nerd-font vs ascii) ─────────────────────────────────────────────────
 const NERD = process.env["STARSHIP_NERD"] === "1";
 const BRANCH_ICON = NERD ? " " : "⎇ ";
-export const AGENTS_ICON = "󰭆 ";
+export const AGENTS_ICON = NERD ? "󰭆 " : "⚙ ";
 const PROMPT = "❯";
 const SEPARATOR = "  "; // between status segments
 
@@ -89,7 +88,7 @@ export function buildStatusLine(
     // 1. Pi icon + Directory
     const dir = basename(ctx.cwd) || ctx.cwd;
     parts.push(
-        theme.fg("error", theme.bold("󰚩  ")) +
+        theme.fg("error", theme.bold(NERD ? "󰚩  " : "pi ")) +
             theme.bold(theme.fg("accent", dir)),
     );
 
@@ -105,7 +104,7 @@ export function buildStatusLine(
     }
 
     // 4. Thinking level (hidden when "off")
-    const thinking = pi.getThinkingLevel?.() ?? "";
+    const thinking = pi.getThinkingLevel() ?? "";
     if (thinking && thinking !== "off") {
         parts.push(theme.fg("success", `think:${thinking}`));
     }
@@ -211,6 +210,7 @@ export default function (pi: ExtensionAPI) {
 
     function install(ctx: ExtensionContext) {
         const uiTheme = ctx.ui.theme;
+        ctx.ui.setWorkingVisible(false);
 
         // Initial git fetch
         void fetchGit(ctx.cwd, pi).then((g) => {
@@ -266,20 +266,14 @@ export default function (pi: ExtensionAPI) {
                 const all = super.render(width);
 
                 // Strip top and bottom borders (pure ─ lines), keep autocomplete rows
-                const out: string[] = [];
-                let topRemoved = false;
-                let bottomRemoved = false;
-                for (const line of all) {
-                    if (!topRemoved && isBorderLine(line)) {
-                        topRemoved = true;
-                        continue;
-                    }
-                    if (topRemoved && !bottomRemoved && isBorderLine(line)) {
-                        bottomRemoved = true;
-                        continue;
-                    }
-                    out.push(line);
+                const borderIndices: number[] = [];
+                for (let i = 0; i < all.length; i++) {
+                    if (isBorderLine(all[i]!)) borderIndices.push(i);
                 }
+                const skipSet = new Set<number>();
+                if (borderIndices.length >= 1) skipSet.add(borderIndices[0]!);
+                if (borderIndices.length >= 2) skipSet.add(borderIndices[borderIndices.length - 1]!);
+                const out = all.filter((_: string, i: number) => !skipSet.has(i));
 
                 if (out.length === 0) return out;
 
