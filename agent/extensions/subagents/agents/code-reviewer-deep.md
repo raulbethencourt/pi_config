@@ -3,7 +3,7 @@ name: codereviewer-deep
 description: Deep code reviewer (escalation tier) — performs thorough architectural and logic review on changes flagged as complex or high-risk by the initial review.
 tools: read, grep, find, ls, rg, workspace
 skills: delta
-model: github-copilot/claude-opus-4.7
+model: opencode-go/kimi-k3
 thinking: high
 ---
 # Deep Code Review Agent

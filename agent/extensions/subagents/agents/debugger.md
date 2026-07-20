@@ -3,7 +3,7 @@ name: debugger
 description: Debug specialist — analyzes errors, test failures, and stack traces. Performs backward reasoning from symptoms to root cause, produces targeted fixes.
 tools: read, grep, find, safe_bash, ast_grep, workspace, ctx_search
 skills: context-mode
-model: github-copilot/claude-sonnet-4.6
+model: opencode-go/glm-5.2
 thinking: minimal
 mcpTools: chrome-devtools
 ---

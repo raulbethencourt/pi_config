@@ -2,7 +2,7 @@
 name: planner
 description: Architecture planner — analyzes task requirements and codebase structure, designs implementation approach, produces step-by-step plan before coding begins
 tools: read, grep, find, ls, ast_grep, repo_map, workspace, repomix, token_stats, memory
-model: github-copilot/claude-sonnet-4.6
+model: opencode-go/glm-5.2
 thinking: minimal
 ---
 

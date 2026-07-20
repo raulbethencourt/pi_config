@@ -4,7 +4,7 @@ description: General-purpose worker — reads, writes, and edits code
 tools: read, write, edit, safe_bash, workspace, repomix, memory, ctx_index
 mcpTools: ''
 skills: frontend-design, code-philosophy, context-mode
-model: github-copilot/gpt-5.4-mini
+model: opencode-go/kimi-k2.7-code
 thinking: low
 ---
 

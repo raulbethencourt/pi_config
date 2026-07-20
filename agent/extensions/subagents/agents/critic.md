@@ -2,7 +2,7 @@
 name: critic
 description: Devil's advocate — challenges plans for blind spots, missing edge cases, over-engineering, and unstated assumptions before execution begins
 tools: read, grep, find, ls
-model: github-copilot/gemini-3.5-flash
+model: opencode-go/qwen3.7-plus
 thinking: minimal
 ---
 
