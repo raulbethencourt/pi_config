@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "linkedom": "^0.18.12",
+    "shell-quote": "^1.8.4",
+    "turndown": "^7.2.4"
+  }
+}

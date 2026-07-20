@@ -22,8 +22,8 @@ explicit user confirmation
 ## Git
 
 - Never force push any branch
-- Never commit, add, restore, pull, reset, fetch files
-- I do git job for changes. You can use git for all diff and read commands
+- Never restore, pull, reset, or fetch files
+- You can use git for add, commit, diff, and read commands
 
 ## Preferences
 

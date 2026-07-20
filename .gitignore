@@ -51,3 +51,11 @@ agent/docs/
 runs/
 agent/fallback-mode.json
 agent/trust.json
+
+# Hermes memory — transient SQLite artifacts
+agent/**/.pi-hermes-locks.sqlite
+agent/pi-hermes-memory/sessions.db
+agent/pi-hermes-memory/*.db-shm
+agent/pi-hermes-memory/*.db-wal
+agent/**/.MEMORY.md.recovery-*
+agent/pi-hermes-memory/*.recovery*

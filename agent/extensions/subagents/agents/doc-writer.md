@@ -3,7 +3,7 @@ name: doc-writer
 description: Documentation writer — generates and updates documentation, README files, API docs, changelogs, and inline comments based on code changes.
 tools: read, write, edit, grep, find, ls, workspace
 skills: stop-slop, translation
-model: github-copilot/gemini-3.5-flash
+model: opencode-go/qwen3.6-plus
 thinking: off
 ---
 

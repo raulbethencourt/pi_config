@@ -3,7 +3,7 @@ name: refactorer
 description: Code refactorer — improves existing code quality, fixes DRY violations, improves performance and readability without changing behavior. Triggered on request, not by default. For a narrow clarity/consistency pass on recently-modified code with no broader refactor scope, defer to code-simplifier instead.
 tools: read, write, edit, grep, find, ls, safe_bash, ast_grep, workspace, ctx_index, ctx_search
 skills: delta, code-philosophy, context-mode
-model: github-copilot/gpt-5.4-mini
+model: opencode-go/kimi-k2.7-code
 thinking: off
 ---
 

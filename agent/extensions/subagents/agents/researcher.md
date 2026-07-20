@@ -4,7 +4,7 @@ description: Web researcher — searches the web and synthesizes findings
 tools: web_search, web_fetch, fetch_content, get_search_content, code_search
 mcpTools: github/search_repositories, github/get_file_contents
 skills: librarian
-model: github-copilot/gpt-5.4-mini
+model: opencode-go/qwen3.6-plus
 thinking: low
 ---
 

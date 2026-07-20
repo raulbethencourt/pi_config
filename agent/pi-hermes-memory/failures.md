@@ -1,0 +1,17 @@
+[tool-quirk] At depth 0, the agent's tools are severely limited: only subagent, ask_user_question, ctx_search, ctx_stats are available. Subagent may crash if it attempts to load missing extensions, causing a loop that blocks further action. Workaround: use pi -ne to start without extensions. <!-- created=2026-07-18, last=2026-07-18 -->
+§
+[insight] When migrating from legacy memory to hermes memory, old extension references in configuration files may cause subagent crashes at depth 0. Check for references to removed extensions in the pi config and subagents registration. <!-- created=2026-07-18, last=2026-07-18 -->
+§
+[correction] Corrected subagent crash by removing the line 'memory: path.join(EXT_BASE, "memory", "index.ts")' from /home/rabeta/.pi/agent/extensions/subagents/index.ts. This line registered a legacy memory extension that no longer existed, causing subagents to fail on spawn. <!-- created=2026-07-18, last=2026-07-18 -->
+§
+[tool-quirk] At depth 0, tools like read, ctx_execute, bash are blocked. Subagent also crashes if it tries to load a missing extension path. Delegation bypass can temporarily lift tool restrictions. <!-- created=2026-07-18, last=2026-07-18 -->
+§
+[convention] When fixing pi extension loading errors, check the CUSTOM_TOOL_EXTENSIONS map in agent/extensions/subagents/index.ts for any references to missing extension paths. <!-- created=2026-07-18, last=2026-07-18 -->
+§
+[convention] When modifying pi subagent configurations, the subagents extension cannot be used to do the work (the subagents being reconfigured can't be invoked). User activates a delegation extension so the main agent performs the work directly; subagents can be reused once the reconfiguration is done. — Failed: Assistant was about to delegate to subagents while the task was to reconfigure those same subagents; user corrected that only the main agent should do it. <!-- created=2026-07-20, last=2026-07-20 -->
+§
+[tool-quirk] When the pi delegation extension is active, direct tools (bash, read, memory, ctx_batch_execute) are blocked at depth 0 with 'STOP. "<tool>" is blocked at depth 0. Delegate via subagent({ agent, task })'. Must route work through subagent() calls instead. — Failed: Multiple direct tool calls were rejected mid-session until work was delegated to subagents. <!-- created=2026-07-20, last=2026-07-20 -->
+§
+[tool-quirk] pi-web-access extension is broken: 'Extension path does not exist: /home/rabeta/.pi/agent/npm/node_modules/pi-web-access/index.ts'. Breaks the researcher subagent (web access) and blocks live pricing lookups. Workaround: start with 'pi -ne' or reinstall the extension. — Failed: Researcher subagent dispatch failed when trying to fetch opencode-go model pricing. <!-- created=2026-07-20, last=2026-07-20 -->
+§
+[insight] For subagent model-tier choices, real cost = model price × tokens × retries. A cheap model that misdiagnoses forces expensive re-runs, so judge tiers by failure cost, not sticker price — this rationale was accepted by the user for the final matrix. — Failed: Guided the cost-vs-quality rebalance (debugger moved from deepseek-v4-pro to glm-5.2). <!-- created=2026-07-20, last=2026-07-20 -->
