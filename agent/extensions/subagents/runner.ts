@@ -48,8 +48,15 @@ export async function spawnPiProcess(opts: {
 	extractToolArgsPreview: (args: Record<string, unknown>) => string;
 	extractTextContent: (content: unknown) => string;
 	env?: Record<string, string | undefined>;
+	/**
+	 * "merge" (default): spawn with `{ ...process.env, ...env }`, preserving today's behavior.
+	 * "replace": spawn with exactly `env` as the child's entire environment — no process.env
+	 * spread. Used by callers (e.g. the mcp-server extension) that must guarantee their own
+	 * full environment (which may hold API keys/tokens) never leaks to spawned children.
+	 */
+	envMode?: "merge" | "replace";
 }): Promise<{ exitCode: number; stderrBuf: string }> {
-	const { command, spawnArgs, cwd, signal, result, progress, startTime, fireUpdate, extractToolArgsPreview, extractTextContent, env } = opts;
+	const { command, spawnArgs, cwd, signal, result, progress, startTime, fireUpdate, extractToolArgsPreview, extractTextContent, env, envMode = "merge" } = opts;
 
 	let stderrBuf = "";
 
@@ -57,7 +64,7 @@ export async function spawnPiProcess(opts: {
 		const proc = spawn(command, spawnArgs, {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
-			env: { ...process.env, ...env },
+			env: envMode === "replace" ? { ...env } : { ...process.env, ...env },
 		});
 
 		let buf = "";
@@ -144,7 +151,11 @@ export async function spawnPiProcess(opts: {
 			resolve(code ?? 1);
 		});
 
-		proc.on("error", () => resolve(1));
+		proc.on("error", (err: Error) => {
+			if (!progress.error) progress.error = err.message;
+			stderrBuf += stderrBuf ? `\n${err.message}` : err.message;
+			resolve(1);
+		});
 
 		if (signal) {
 			const kill = () => {
