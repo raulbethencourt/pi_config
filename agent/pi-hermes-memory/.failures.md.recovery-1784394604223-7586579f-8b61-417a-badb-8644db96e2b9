@@ -1,1 +1,0 @@
-[tool-quirk] At depth 0, the agent's tools are severely limited: only subagent, ask_user_question, ctx_search, ctx_stats are available. Subagent may crash if it attempts to load missing extensions, causing a loop that blocks further action. Workaround: use pi -ne to start without extensions. <!-- created=2026-07-18, last=2026-07-18 -->
