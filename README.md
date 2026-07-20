@@ -88,6 +88,7 @@ Subagents have access to custom, context-efficient tools and triggerable skills:
 - **delta**: Syntax-highlighted git diff display.
 - **frontend-design**: Modern aesthetic guidance and UI styling components.
 - **native-web-search** / **websearch**: Multi-strategy internet search and page extraction.
+- **skill-creator**: Scaffolds a new pi skill (SKILL.md frontmatter, name validation, collision check, minimal body skeleton).
 - **stop-slop**: Eliminates robotic AI prose patterns from written documentation.
 - **sugarcrm-testing**: Specialized testing workflows.
 - **translation**: Automated Markdown document translation via deep-translator.
