@@ -1,0 +1,9 @@
+{
+  "name": "pi-mcp-server",
+  "private": true,
+  "type": "module",
+  "description": "Standalone MCP stdio server exposing read-only pi subagent personas as MCP tools. No dependencies: the MCP SDK and zod are resolved by absolute path from agent/npm/node_modules at runtime.",
+  "scripts": {
+    "start": "node serve.ts"
+  }
+}
