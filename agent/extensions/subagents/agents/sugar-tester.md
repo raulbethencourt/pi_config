@@ -3,7 +3,7 @@ name: sugar-tester
 description: Specialized agent for creating, running, and debugging SugarCRM checks (bns curl E2E, PHPUnit, local scheduler/batch execution)
 tools: read, write, edit, safe_bash, workspace, test_config
 skills: sugarcrm-testing
-model: opencode-go/qwen3.7-plus
+model: opencode-go/qwen3.6-plus
 thinking: off
 ---
 

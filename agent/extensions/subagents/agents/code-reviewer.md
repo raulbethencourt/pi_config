@@ -3,7 +3,7 @@ name: codereviewer
 description: Code reviewer — You are an expert code reviewer tasked with analyzing git commits 
 tools: read, grep, find, ls, rg, workspace, git_inspect, ctx_search
 skills: delta, context-mode
-model: opencode-go/glm-5.2
+model: opencode-go/deepseek-v4-pro
 thinking: minimal
 ---
 # Code Review Agent
