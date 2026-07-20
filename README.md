@@ -58,6 +58,7 @@ Each agent is defined by a markdown specification under `agent/extensions/subage
 | **tester** | Test suite generation, test execution, and automated diagnostic validation | gpt-5.3-codex |
 | **debugger** | Root-cause analysis and backward tracing from error symptoms | claude-opus-4.6 |
 | **refactorer** | Non-breaking code quality and structural improvements | gpt-5.3-codex |
+| **code-simplifier** | Clarity/consistency polish for recently-modified code (naming, duplication-at-a-glance, readability drift) — narrower scope than refactorer | gpt-5.4-mini |
 | **security-auditor** | Lightweight static security scans and dependency vulnerability analysis | claude-sonnet-4.6 |
 | **security-auditor-deep** | Exhaustive multi-pass security analysis and vulnerability simulation | claude-opus-4.6 |
 | **doc-writer** | Automated technical writing, markdown documentation, and changelog updates | claude-sonnet-4.6 |

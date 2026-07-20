@@ -43,10 +43,10 @@ Claude Code maintains a fixed list of paths (`.git`, `.claude`, shell rc files, 
 
 **Done.** `PROTECTED_FOLDER_ENTRIES`, `PROTECTED_WRITE_ONLY_FILES` (`.bashrc`, `.zshrc`, `.gitconfig`, `.npmrc`, `auth.json`), and `PROTECTED_PATH_PATTERNS` (`.git/hooks`, `.git/config`) added to `agent/extensions/bash-guard/index.ts` (commit `cf52f62`). Hard-block bypasses found during review were fixed under item #15.
 
-### 7. Add a `code-simplifier`-tier persona — partially done
+### 7. Add a `code-simplifier`-tier persona — done
 The one confirmed roster drift since pi's 14 agents were ported from Claude: pi's `refactorer` handles explicit, potentially broad-scope refactors, but there's no narrow "polish what was just written for clarity/consistency, default to recently-modified code" role distinct from that. Low cost (one more persona `.md` + a routing-table row), moderate value.
 
-**Partially done.** Persona file added at `agent/extensions/subagents/agents/code-simplifier.md` (commit `99fa896`). Still open: confirm it's wired into the actual routing table (delegation matrix / commands-loader), not just present as a standalone file.
+**Done.** Persona file added at `agent/extensions/subagents/agents/code-simplifier.md` (commit `99fa896`), already correctly referenced in `agent/SYSTEM.md` and `agent/skills/orchestrator/SKILL.md`'s delegation matrices. Remaining gaps closed: `AVAILABLE_AGENTS` and the blocked-tool error-message string in `agent/extensions/delegation-enforcer/index.ts` now list `code-simplifier` alongside the other 14 personas; the Agent Catalog table in `README.md` now has a `code-simplifier` row (model/role sourced from the persona file's frontmatter); `agent/extensions/subagents/routing.json` was left without a `code-simplifier` entry on purpose — its frontmatter pins a single fixed model (`github-copilot/gpt-5.4-mini`) with no complexity-tiered variation, so a routing-table row would add no value (confirmed via `routing.ts`: an agent absent from `routing.json` simply keeps its own frontmatter model). No test in `agent/tests/` asserts persona-registry/disk sync, so none needed updating.
 
 ### 8. Add a skill-creator-equivalent meta-tool
 No skill-authoring skill/extension found in pi's inventory. Given pi already has 16 skills and an active skill-development cadence (design-doc backlog in `agent/docs/*.md`), a lightweight scaffolding skill/command (frontmatter template, `SKILL.md` conventions, trigger-description guidance) would reduce friction for adding #7 above and any future skills.

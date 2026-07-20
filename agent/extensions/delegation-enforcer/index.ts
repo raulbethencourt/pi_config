@@ -8,8 +8,8 @@ const ALLOWED_TOOLS = new Set([
 
 const AVAILABLE_AGENTS = [
 	"scout", "researcher", "planner", "worker", "tester", "sugar-tester",
-	"debugger", "security-auditor", "security-auditor-deep", "doc-writer", "refactorer",
-	"codereviewer", "code-reviewer-deep", "critic",
+	"debugger", "security-auditor", "security-auditor-deep", "doc-writer", "code-simplifier",
+	"refactorer", "codereviewer", "code-reviewer-deep", "critic",
 ];
 
 export default function (pi: ExtensionAPI) {
@@ -41,7 +41,7 @@ export default function (pi: ExtensionAPI) {
 			block: true,
 			reason:
 				`STOP. "${toolName}" is blocked at depth 0. Delegate via subagent({ agent, task }).\n` +
-				`Agents: scout | researcher | worker | tester | planner | critic | sugar-tester | debugger | codereviewer | doc-writer | refactorer\n` +
+				`Agents: scout | researcher | worker | tester | planner | critic | sugar-tester | debugger | codereviewer | doc-writer | code-simplifier | refactorer\n` +
 				`Parallel: subagent({ tasks: [{ agent, task }, ...] })`,
 		};
 	});
