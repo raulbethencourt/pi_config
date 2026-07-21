@@ -165,6 +165,18 @@ function buildSeedMessages(ctx: ExtensionContext, thread: BtwDetails[]): Message
 	return seed;
 }
 
+/**
+ * Seeds `session`'s transcript with `seedMessages`, replacing whatever the agent
+ * started with. Extracted from `createSideSession` so the assignment (and the
+ * bug it once carried — see agent/tests/btw-side-session.test.ts) is directly
+ * testable without exporting the whole side-session factory.
+ */
+export function seedSideSessionMessages(session: AgentSession, seedMessages: Message[]): void {
+	if (seedMessages.length > 0) {
+		session.agent.state.messages = seedMessages as typeof session.state.messages;
+	}
+}
+
 export function formatThread(thread: BtwDetails[]): string {
 	return thread
 		.map((item) => `User: ${item.question.trim()}\nAssistant: ${item.answer.trim()}`)
@@ -550,9 +562,7 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		const seedMessages = buildSeedMessages(ctx, thread);
-		if (seedMessages.length > 0) {
-			session.agent.replaceMessages(seedMessages as typeof session.state.messages);
-		}
+		seedSideSessionMessages(session, seedMessages);
 
 		const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
 			if (!sideBusy || !pendingQuestion) {
