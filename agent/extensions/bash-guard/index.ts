@@ -393,7 +393,19 @@ export function analyzeSegment(seg: Token[]): Risk | null {
     return { severity, reasons };
 }
 
-export function analyzeBashCommand(command: string): Risk | null {
+// Maximum recursion depth for descending into nested command/process
+// substitutions (see extractSubstitutionSpans below). Caps pathological
+// inputs like `$($($($(...))))` at a fixed, small amount of work rather than
+// recursing once per nesting level indefinitely — item #16 only requires
+// catching realistic hidden-command bypasses, not arbitrarily deep nesting.
+const MAX_SUBSTITUTION_RECURSION_DEPTH = 5;
+
+// Whole-command analysis for a single command string, with no awareness of
+// substitutions — this is exactly what analyzeBashCommand did before item
+// #16. Split out so analyzeBashCommand can run it unconditionally at every
+// depth and layer the recursive substitution pass on top, rather than the
+// recursion needing to duplicate or skip this logic.
+function analyzeBashCommandBase(command: string): Risk | null {
     let tokens: Token[];
     try {
         tokens = shellParse(command) as Token[];
@@ -459,6 +471,45 @@ export function analyzeBashCommand(command: string): Risk | null {
     const uniq = [...new Set(reasons)];
     if (uniq.length === 0) return null;
     return { severity, reasons: uniq };
+}
+
+// Item #16: a dangerous command hidden inside a $(...)/`...`/<(...)/>(...)
+// substitution (e.g. `cat $(rm -rf ~/.ssh)`) is invisible to
+// analyzeBashCommandBase — shell-quote flattens the substitution's inner
+// tokens into the SAME segment as the outer command, so the buried `rm -rf`
+// never becomes its own segment's args[0]. This wrapper closes that gap by
+// recursively analyzing each substitution span as its own command string.
+//
+// The base (whole-command) analysis always runs regardless of depth — the
+// depth cap only ever gates whether we ALSO recurse into substitution spans,
+// it never suppresses or replaces the normal analysis of the current command
+// string. Depth is capped at MAX_SUBSTITUTION_RECURSION_DEPTH to bound work
+// on pathological/adversarial nesting (e.g. `$($($($(...))))`) rather than
+// recursing once per nesting level indefinitely.
+export function analyzeBashCommand(command: string, depth = 0): Risk | null {
+    const baseRisk = analyzeBashCommandBase(command);
+
+    if (depth >= MAX_SUBSTITUTION_RECURSION_DEPTH) return baseRisk;
+
+    const spans = extractSubstitutionSpans(command);
+    if (spans.length === 0) return baseRisk;
+
+    let severity: Severity = baseRisk?.severity ?? "medium";
+    const reasons: string[] = baseRisk ? [...baseRisk.reasons] : [];
+    let foundInnerRisk = false;
+
+    for (const span of spans) {
+        const innerRisk = analyzeBashCommand(span, depth + 1);
+        if (!innerRisk) continue;
+        foundInnerRisk = true;
+        if (innerRisk.severity === "high") severity = "high";
+        for (const r of innerRisk.reasons) {
+            reasons.push(`inside command/process substitution: ${r}`);
+        }
+    }
+
+    if (!foundInnerRisk) return baseRisk;
+    return { severity, reasons: [...new Set(reasons)] };
 }
 
 async function promptRunOrAbort(
@@ -909,8 +960,88 @@ function hasUnquotedNewlineWithContent(command: string): boolean {
     return false;
 }
 
+// Extracts the inner content of every command-substitution (`$(...)`,
+// backtick) and process-substitution (`<(...)`, `>(...)`) span in a raw bash
+// command string — item #16 (command/process substitution bypass of the
+// protected-path hard block).
+//
+// This is a cheap best-effort RAW-STRING scan, not a shell-quote-token-based
+// one, for the same reason hasUnquotedNewlineWithContent above isn't
+// token-based: shell-quote's tokenization of these constructs is empirically
+// unreliable for this purpose. `$(` and a bare `(` (subshell grouping)
+// produce indistinguishable op tokens; `>(` is split across two separate
+// tokens while `<(` parses as a single token, an inconsistency that makes a
+// uniform token-level rule for both forms impractical; and backticks aren't
+// tokenized as structure at all — they glue onto whichever adjacent string
+// token they're next to. Scanning the raw string directly sidesteps all of
+// that.
+//
+// Deliberately does NOT track quoting state. A quoted literal that merely
+// contains the text `$(...)` (e.g. inside a single-quoted string that is
+// never actually expanded by the shell) still counts as "contains a
+// substitution" here. This is accepted over-detection, not an oversight: the
+// alternative — trying to determine whether a given `$(`/backtick/`<(`/`>(`
+// occurrence is "real" vs. quoted-and-inert — is exactly the kind of
+// under-detection risk that reopens the bypass this function exists to
+// close. Over-flagging a command that turns out to be harmless costs a
+// prompt/hard-block; under-flagging a real substitution reopens item #16.
+//
+// Also deliberately does NOT special-case arithmetic expansion `$((...))`:
+// it will register as containing a (nested) substitution span, same as
+// command substitution. This is an intentional, accepted trade-off — not a
+// bug to later "narrow down" — for the same reason as the quoting choice
+// above: distinguishing arithmetic from command substitution reliably from
+// raw text alone is not worth the risk of a narrower check missing a real
+// case.
+export function extractSubstitutionSpans(command: string): string[] {
+    const spans: string[] = [];
+    let i = 0;
+    while (i < command.length) {
+        const two = command.slice(i, i + 2);
+        if (two === "$(" || two === "<(" || two === ">(") {
+            let depth = 1;
+            let j = i + 2;
+            while (j < command.length && depth > 0) {
+                if (command[j] === "(") depth++;
+                else if (command[j] === ")") depth--;
+                if (depth === 0) break;
+                j++;
+            }
+            spans.push(command.slice(i + 2, j));
+            i = depth === 0 ? j + 1 : j;
+            continue;
+        }
+        if (command[i] === "`") {
+            const close = command.indexOf("`", i + 1);
+            if (close === -1) {
+                spans.push(command.slice(i + 1));
+                break;
+            }
+            spans.push(command.slice(i + 1, close));
+            i = close + 1;
+            continue;
+        }
+        i++;
+    }
+    return spans;
+}
+
 export function isReadOnlyBashCommand(command: string): boolean {
     if (!READ_ONLY_CMDS.test(command)) return false;
+
+    // Item #16: ANY command/process substitution syntax ($(...), backtick,
+    // <(...), >(...)) anywhere in the command unconditionally disqualifies it
+    // from the read-only exemption — fail-closed, whole-command level, no
+    // narrower carve-out based on what the substitution's inner content turns
+    // out to be. This is deliberate: a substitution can hide an arbitrary
+    // command (`cat $(rm -rf ~/.ssh)`) behind an outer command that is itself
+    // in READ_ONLY_CMD_NAMES, and shell-quote's tokenization gives no reliable
+    // boundary to inspect the inner content at a finer grain here (see
+    // extractSubstitutionSpans above for why). The accepted trade-off — e.g.
+    // `diff <(cat ~/.ssh/config) /tmp/backup` now hard-blocks even though the
+    // substitution's own content is a harmless read — was explicitly
+    // confirmed by the user as intentional, not a bug to later loosen.
+    if (extractSubstitutionSpans(command).length > 0) return false;
 
     // Fail closed on unquoted newline-separated commands — see
     // hasUnquotedNewlineWithContent above for why this can't be handled via
@@ -970,25 +1101,28 @@ export function isReadOnlyBashCommand(command: string): boolean {
     // cmd === "ls" correctly — there is no args[0]-flattening bug for parens
     // themselves to close, once the real separators around them are split.
     //
-    // NOT covered by this list (documented, separate limitation — not an
-    // "operator missing from the list" bug, and out of scope for this fix):
-    // command substitution (`$(...)`/backtick). shell-quote flattens a
-    // substitution's inner tokens into the SAME segment as the outer command
-    // without any boundary marker distinguishing "nested inside a
-    // substitution" from "a sibling top-level word" — e.g. `cat $(rm -rf
-    // ~/.ssh; echo /etc/hosts)` parses to a token stream where the nested
-    // ";" looks identical to a top-level one, splitting it produces a
-    // leading segment whose args[0] is still "cat" (the OUTER command), and
-    // the embedded `rm -rf` never surfaces as its own segment at all. This
-    // is a structurally different bug (indistinguishable nesting depth, not
-    // a missing split token) that splitOnOps cannot fix by adding more
-    // operators to its list; closing it would need subshell-depth-aware
-    // tokenization. Flagged for follow-up rather than patched here.
+    // NOT covered by this list — and not fixable by adding more operators to
+    // it: command substitution (`$(...)`/backtick) and process substitution
+    // (`<(...)`/`>(...)`). shell-quote flattens a substitution's inner tokens
+    // into the SAME segment as the outer command without any boundary marker
+    // distinguishing "nested inside a substitution" from "a sibling
+    // top-level word" — e.g. `cat $(rm -rf ~/.ssh; echo /etc/hosts)` parses
+    // to a token stream where the nested ";" looks identical to a top-level
+    // one, splitting it produces a leading segment whose args[0] is still
+    // "cat" (the OUTER command), and the embedded `rm -rf` never surfaces as
+    // its own segment at all. This is a structurally different bug
+    // (indistinguishable nesting depth, not a missing split token) that
+    // splitOnOps genuinely cannot fix by adding more operators to its list.
     //
-    // Process substitution (`<(...)`/`>(...)`) hits this identical flattening
-    // bug for the same structural reason (shell-quote doesn't mark
-    // subshell-nesting boundaries) — noted here as a distinct known gap so
-    // it isn't lost, also out of scope for this fix.
+    // This is item #16, and it IS fixed now — just not here, and not via
+    // splitOnOps. The fix lives one level up: the early
+    // `extractSubstitutionSpans(command).length > 0` check at the top of
+    // this function disqualifies the whole command from the read-only
+    // exemption the moment ANY substitution syntax is present, before
+    // shell-quote's flattening can ever hide a buried command inside it. That
+    // whole-command-disqualification approach is deliberately coarser than a
+    // token/segment-level fix would be — see the comment above that check for
+    // the accepted trade-off this implies.
     const segments = splitOnOps(tokens, ["&&", ";", "|", "||", "&", ";;", "|&"]);
     if (segments.length === 0) return false;
 

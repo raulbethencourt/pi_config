@@ -9,6 +9,7 @@ import {
   commandReferencesPath,
   findBlockedProtectedFolderReference,
   PROTECTED_PATH_PATTERNS,
+  extractSubstitutionSpans,
 } from "../extensions/bash-guard/index.ts";
 
 const HOME = process.env.HOME || "/home/rabeta";
@@ -723,5 +724,115 @@ describe("isReadOnlyBashCommand — other chain-separator operators (;; and |&) 
 
   it("still treats an all-read-only ;;-separated pair as read-only (no over-blocking)", () => {
     expect(isReadOnlyBashCommand(`ls ${HOME}/.ssh ;; cat ${HOME}/.ssh/config`)).toBe(true);
+  });
+});
+
+// ── command/process substitution bypass — item #16 regression ──────────
+// isReadOnlyBashCommand only ever inspects args[0] of the (possibly split)
+// segment. shell-quote flattens a $(...)/`...`/<(...)/>(...) substitution's
+// inner tokens into the SAME token array as the outer command with no
+// boundary marker distinguishing "nested inside a substitution" from "a
+// sibling top-level word" — so e.g. `cat $(rm -rf ~/.ssh)` still has
+// tokensToStrings(seg)[0] === "cat", and the buried "rm -rf ~/.ssh" never
+// surfaces as its own segment. That wrongly grants the read-only exemption,
+// so findBlockedProtectedFolderReference never hard-blocks these commands
+// even when they reference a protected path.
+//
+// Fix implemented and under test (GREEN — all tests below pass):
+//   - extractSubstitutionSpans(command): string[] — a raw-string (not
+//     shell-quote-token-based) scanner for $(...), `...`, <(...), >(...)
+//     spans, fail-closed (non-empty, no throw) on malformed/unterminated
+//     input.
+//   - isReadOnlyBashCommand gets a new early check: ANY substitution syntax
+//     anywhere disqualifies the whole command from the read-only exemption
+//     unconditionally — fail-closed, no narrower carve-out (user-confirmed
+//     intended design).
+//
+// NOTE on command choice: the fix's own design notes illustrate the bug with
+// `diff <(...)`/`tee >(...)`, but neither "diff" nor "tee" is a member of
+// READ_ONLY_CMDS/READ_ONLY_CMD_NAMES in the first place — a command built
+// around them is ALREADY classified non-read-only today for an unrelated
+// reason (the outer command name itself never matches), which would make
+// "isReadOnlyBashCommand(...) === false" assertions pass whether or not this
+// fix exists. To keep these tests a genuine regression check tied to the
+// actual bug, "cat" (which IS in READ_ONLY_CMD_NAMES) is used as the outer
+// command for every substitution form below instead.
+
+describe("command/process substitution bypass — item #16 regression", () => {
+  it("extractSubstitutionSpans finds the inner content of a $(...) command substitution", () => {
+    const spans = extractSubstitutionSpans(`cat $(rm -rf ${HOME}/.ssh)`);
+    expect(spans.length).toBeGreaterThan(0);
+    expect(spans.some((s) => s.includes(`rm -rf ${HOME}/.ssh`))).toBe(true);
+  });
+
+  it("$(...)  form: isReadOnlyBashCommand no longer grants the read-only exemption", () => {
+    expect(isReadOnlyBashCommand(`cat $(rm -rf ${HOME}/.ssh)`)).toBe(false);
+  });
+
+  it("$(...) form: findBlockedProtectedFolderReference hard-blocks it", () => {
+    const command = `cat $(rm -rf ${HOME}/.ssh)`;
+    expect(findBlockedProtectedFolderReference(command)).not.toBeNull();
+  });
+
+  it("backtick form: isReadOnlyBashCommand no longer grants the read-only exemption", () => {
+    const command = `cat \`rm -rf ${HOME}/.ssh\``;
+    expect(isReadOnlyBashCommand(command)).toBe(false);
+  });
+
+  it("backtick form: findBlockedProtectedFolderReference hard-blocks it", () => {
+    const command = `cat \`rm -rf ${HOME}/.ssh\``;
+    expect(findBlockedProtectedFolderReference(command)).not.toBeNull();
+  });
+
+  it("<(...) process-substitution form: isReadOnlyBashCommand no longer grants the read-only exemption", () => {
+    expect(isReadOnlyBashCommand(`cat <(rm -rf ${HOME}/.ssh) /etc/hosts`)).toBe(false);
+  });
+
+  it("<(...) process-substitution form: findBlockedProtectedFolderReference hard-blocks it", () => {
+    const command = `cat <(rm -rf ${HOME}/.ssh) /etc/hosts`;
+    expect(findBlockedProtectedFolderReference(command)).not.toBeNull();
+  });
+
+  it(">(...) process-substitution form: isReadOnlyBashCommand no longer grants the read-only exemption", () => {
+    expect(isReadOnlyBashCommand(`cat >(rm -rf ${HOME}/.ssh) /etc/hosts`)).toBe(false);
+  });
+
+  it(">(...) process-substitution form: findBlockedProtectedFolderReference hard-blocks it", () => {
+    const command = `cat >(rm -rf ${HOME}/.ssh) /etc/hosts`;
+    expect(findBlockedProtectedFolderReference(command)).not.toBeNull();
+  });
+
+  it("blocks a credential-file (agent/auth.json, never-exempt entry) reference hidden inside a substitution", () => {
+    const inner = `cp ${HOME}/.pi/agent/auth.json /tmp/exfil`;
+    const command = `echo $(${inner})`;
+    const spans = extractSubstitutionSpans(command);
+    expect(spans.some((s) => s.includes(`${HOME}/.pi/agent/auth.json`))).toBe(true);
+    const blocked = findBlockedProtectedFolderReference(command);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.allowReadOnlyBashExemption).toBe(false);
+  });
+
+  it("loses the read-only label due to substitution syntax but is NOT blocked absent any protected-path reference (not a contradiction)", () => {
+    // This is NOT a contradiction: losing the read-only LABEL only matters
+    // when a protected path is ALSO referenced by the command. Neither
+    // file1.txt nor file2.txt is a protected path, so
+    // findBlockedProtectedFolderReference has nothing to block regardless of
+    // how isReadOnlyBashCommand classifies the command.
+    expect(isReadOnlyBashCommand("cat <(sort file1.txt) <(sort file2.txt)")).toBe(false);
+    expect(
+      findBlockedProtectedFolderReference("cat <(sort file1.txt) <(sort file2.txt)"),
+    ).toBeNull();
+  });
+
+  it("confirmed fail-closed case: blocks even when the substitution's own inner content is itself a harmless read (user-confirmed intentional trade-off, not a bug)", () => {
+    const command = `cat <(cat ${HOME}/.ssh/config) /tmp/backup`;
+    expect(findBlockedProtectedFolderReference(command)).not.toBeNull();
+  });
+
+  it("extractSubstitutionSpans fails closed (non-empty, does not throw) on an unterminated $(... with no closing paren", () => {
+    expect(() => extractSubstitutionSpans("cat $(rm -rf")).not.toThrow();
+    const spans = extractSubstitutionSpans("cat $(rm -rf");
+    expect(spans.length).toBeGreaterThan(0);
+    expect(spans.some((s) => s.includes("rm -rf"))).toBe(true);
   });
 });

@@ -6,6 +6,8 @@ import {
   type Token, type OpToken,
 } from "../extensions/bash-guard/index.ts";
 
+const HOME = process.env.HOME || "/home/rabeta";
+
 describe("isOpToken", () => {
   it("returns true for op objects", () => {
     expect(isOpToken({ op: "|" })).toBe(true);
@@ -219,6 +221,57 @@ describe("analyzeBashCommand", () => {
 describe("TEST_FILE_PATTERNS", () => {
   it("is a non-empty array", () => {
     expect(TEST_FILE_PATTERNS.length).toBeGreaterThan(0);
+  });
+});
+
+// ── analyzeBashCommand — command/process substitution recursion — item #16
+// regression ─────────────────────────────────────────────────────────────
+// analyzeSegment only ever inspects a segment's OWN args[0] as `cmd`. Since
+// shell-quote flattens a $(...)/`...`/<(...)/>(...) substitution's inner
+// tokens into the SAME segment as the outer command with no boundary marker,
+// a dangerous inner command (e.g. `rm -rf ~/.ssh` inside
+// `cat $(rm -rf ~/.ssh)`) never becomes args[0] of its own segment and is
+// invisible to analyzeSegment entirely — analyzeBashCommand used to return
+// null for the whole command. The fix gives analyzeBashCommand an optional
+// depth-capped (max 5) recursive pass: it additionally calls
+// extractSubstitutionSpans on the command and recurses into each captured
+// span via analyzeBashCommand(span, depth + 1), merging any resulting Risk
+// (bumping severity to "high", prefixing inner reasons with "inside
+// command/process substitution: "). Implemented and passing (GREEN).
+
+describe("analyzeBashCommand — command/process substitution recursion — item #16 regression", () => {
+  it("flags a dangerous rm -rf hidden inside a $(...) command substitution behind a harmless outer command", () => {
+    const risk = analyzeBashCommand(`cat $(rm -rf ${HOME}/.ssh)`);
+    expect(risk).not.toBeNull();
+    expect(risk!.severity).toBe("high");
+    expect(
+      risk!.reasons.some(
+        (r) => r.includes("rm") && r.includes("inside command/process substitution"),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not false-positive on a harmless substitution ($(date))", () => {
+    expect(analyzeBashCommand("echo $(date)")).toBeNull();
+  });
+
+  it("recurses into a substitution nested inside another substitution, still within the depth cap", () => {
+    const risk = analyzeBashCommand(`cat $(echo $(rm -rf ${HOME}/.ssh))`);
+    expect(risk).not.toBeNull();
+    expect(risk!.severity).toBe("high");
+  });
+
+  it("does not hang or throw on deeply (8+ level) nested substitutions past the depth-5 recursion cap", () => {
+    // Per spec: depth is capped at 5; once depth >= 5, the
+    // extractSubstitutionSpans/recursion step is skipped entirely, but the
+    // outermost call at any depth must still return whatever the normal
+    // (non-recursive) analysis produces for the current command string —
+    // i.e. the call must resolve, not hang or throw. This deliberately does
+    // NOT assert a specific severity/reason for content past the depth cap,
+    // since the spec only commits to "no hang" + "no further recursion past
+    // depth 5", not an exact result for the deepest layer.
+    const deeplyNested = "echo " + "$(".repeat(9) + `rm -rf ${HOME}` + ")".repeat(9);
+    expect(() => analyzeBashCommand(deeplyNested)).not.toThrow();
   });
 });
 
