@@ -24,7 +24,7 @@ function normalizeVitestTimestampSuffix() {
 export default defineConfig({
   plugins: [normalizeVitestTimestampSuffix()],
   test: {
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.ts", "extensions/**/*.test.ts"],
     environment: "node",
   },
   resolve: {
