@@ -520,6 +520,30 @@ describe("find/fd bare-name read-only classification — protected-path bypass (
     // flag as -X/--exec-batch.
     expect(isReadOnlyBashCommand("fd -eXML .")).toBe(true);
   });
+
+  // ── item #17 gap: -o/--owner and -C/--base-directory are missing from
+  // FD_VALUE_TAKING_SHORT_FLAG_CHARS ── unlike -tx/-eXML above (already
+  // covered, already correct), these two value-taking short flags are NOT
+  // yet in the set, so the bundled-flag scan doesn't know to stop and treat
+  // the rest of the token as their attached value. If that attached value
+  // happens to contain an x/X, the scan wrongly reaches it as if it were a
+  // further bundled boolean flag and misclassifies the whole (harmless)
+  // invocation as a bundled -x/--exec flag. That's over-blocking, not a
+  // bypass: a harmless fd invocation gets wrongly treated as NOT read-only,
+  // which strips its exemption from the ~/.ssh protected-path hard block.
+  // These two currently FAIL, proving the gap; they should PASS once "o"
+  // and "C" are added to FD_VALUE_TAKING_SHORT_FLAG_CHARS.
+  it("[item #17 gap] should treat bundled `fd -Hox` (-o's attached value, not a bundled -x/--exec) as read-only", () => {
+    const command = `fd -Hox . ${HOME}/.ssh`;
+    expect(isReadOnlyBashCommand(command)).toBe(true);
+    expect(findBlockedProtectedFolderReference(command)).toBeNull();
+  });
+
+  it("[item #17 gap] should treat bundled `fd -HCx` (-C's attached value, not a bundled -x/--exec) as read-only", () => {
+    const command = `fd -HCx . ${HOME}/.ssh`;
+    expect(isReadOnlyBashCommand(command)).toBe(true);
+    expect(findBlockedProtectedFolderReference(command)).toBeNull();
+  });
 });
 
 // ── isReadOnlyBashCommand — chaining bypass (code-reviewer REJECT finding) ──

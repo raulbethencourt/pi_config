@@ -869,9 +869,9 @@ const FD_MUTATING_FLAGS = new Set(["-x", "--exec", "-X", "--exec-batch"]);
 // destructive `fd -Hx rm -rf ~/.ssh \;` slip past as "read-only".
 //
 // A naive "does this dash-prefixed token contain x/X anywhere" scan is NOT
-// safe: fd also has value-taking short flags (-d, -E, -t, -e, -S, -c, -j)
-// whose attached value can legitimately contain x/X without the token being
-// an exec flag. `fd -tx .` is fd's own documented shorthand for
+// safe: fd also has value-taking short flags (-d, -E, -t, -e, -S, -c, -j,
+// -o, -C) whose attached value can legitimately contain x/X without the
+// token being an exec flag. `fd -tx .` is fd's own documented shorthand for
 // `--type executable`, and `-eXML`/`-Exyz` are attached-value forms of
 // -e/-E — none of these execute anything. The invariant relied on below:
 // walk the token's characters after the leading dash and stop as soon as a
@@ -880,7 +880,7 @@ const FD_MUTATING_FLAGS = new Set(["-x", "--exec", "-X", "--exec-batch"]);
 // inspected. A bare x/X reached strictly before any value-taking flag
 // letter means a boolean bundle like `-Hx` or `-uHx`, which IS exec/
 // exec-batch usage.
-const FD_VALUE_TAKING_SHORT_FLAG_CHARS = new Set(["d", "E", "t", "e", "S", "c", "j"]);
+const FD_VALUE_TAKING_SHORT_FLAG_CHARS = new Set(["d", "E", "t", "e", "S", "c", "j", "o", "C"]);
 
 function isFdBundledExecFlag(token: string): boolean {
     if (!/^-[A-Za-z]+$/.test(token)) return false; // single-dash, letters-only bundle
