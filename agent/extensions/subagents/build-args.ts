@@ -20,6 +20,7 @@ import { resolveModel, loadRoutingConfig } from "./routing.ts";
 import { resolveMCPTools, getMCPAdapterPath } from "./resolve-mcp-tools.ts";
 import { filterChildTools } from "./filter-child-tools.ts";
 import { stripParentOrchestrationContent } from "./strip-orchestration.ts";
+import { mintCoordinationSessionId } from "../coordination/session-dir.ts";
 
 // ── Vendored file-mutation queue ───────────────────────────────────────
 // Copied verbatim (algorithm unchanged) from the installed
@@ -103,6 +104,13 @@ const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", 
 const EXT_BASE = path.join(process.env.HOME || "~", ".pi", "agent", "extensions");
 
 const HASHLINE_EXTENSION = path.resolve(EXT_DIR, "../hashline/index.ts");
+const COORDINATION_EXTENSION = path.resolve(EXT_DIR, "../coordination/index.ts");
+// One coordination session per top-level process hosting this module (e.g.
+// the mcp-server extension's standalone spawn path), mirroring the
+// `coordinationSessionId` convention in subagents/index.ts. Threaded into
+// every spawned subagent child via PI_COORDINATION_SESSION_ID so siblings
+// share the same on-disk lock/tasks directory.
+const coordinationSessionId = mintCoordinationSessionId();
 const { routing: ROUTING_CONFIG, fallback: FALLBACK_CONFIG } = loadRoutingConfig(path.dirname(AGENTS_DIR));
 
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
@@ -349,6 +357,12 @@ export async function buildPiArgs(
 		args.push("--extension", HASHLINE_EXTENSION);
 	}
 
+	// Always load the coordination extension so sibling subagents don't
+	// clobber each other's write/edit calls to the same file.
+	if (fs.existsSync(COORDINATION_EXTENSION)) {
+		args.push("--extension", COORDINATION_EXTENSION);
+	}
+
 	const { model: routedModel, tier: complexityTier, usedFallback } = resolveModel(
 		agent.model,
 		agent.name,
@@ -379,6 +393,8 @@ export async function buildPiArgs(
 	const mcpEnv: Record<string, string | undefined> = {
 		MCP_DIRECT_TOOLS: resolvedMCP.envValue,
 		PI_SUBAGENT_DEPTH: String(childDepth),
+		PI_COORDINATION_SESSION_ID: coordinationSessionId,
+		PI_SUBAGENT_NAME: agent.name,
 	};
 
 	if (resolvedMCP.loadAdapter) {

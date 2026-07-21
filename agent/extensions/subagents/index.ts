@@ -26,6 +26,8 @@ import { shouldBlockSugarTester } from "./sugar-guard.ts";
 import { filterChildTools } from "./filter-child-tools.ts";
 import { stripChildPromptHook } from "./strip-child-prompt-hook.ts";
 import { stripParentOrchestrationContent } from "./strip-orchestration.ts";
+import { pruneStaleSessions } from "../coordination/index.ts";
+import { mintCoordinationSessionId } from "../coordination/session-dir.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -136,6 +138,12 @@ const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", 
 const EXT_BASE = path.join(process.env.HOME || "~", ".pi", "agent", "extensions");
 
 const HASHLINE_EXTENSION = path.resolve(EXT_DIR, "../hashline/index.ts");
+const COORDINATION_EXTENSION = path.resolve(EXT_DIR, "../coordination/index.ts");
+// One coordination session per top-level pi process, minted once at module
+// load (matching the telemetry `sessionId` convention below), threaded into
+// every spawned subagent child via PI_COORDINATION_SESSION_ID so siblings
+// share the same on-disk lock/tasks directory. See extensions/coordination/README.md.
+const coordinationSessionId = mintCoordinationSessionId();
 const { routing: ROUTING_CONFIG, fallback: FALLBACK_CONFIG } = loadRoutingConfig(path.dirname(AGENTS_DIR));
 
 const CUSTOM_TOOL_EXTENSIONS: Record<string, string> = {
@@ -503,6 +511,12 @@ async function buildPiArgs(
 		args.push("--extension", HASHLINE_EXTENSION);
 	}
 
+	// Always load the coordination extension so sibling subagents don't
+	// clobber each other's write/edit calls to the same file.
+	if (fs.existsSync(COORDINATION_EXTENSION)) {
+		args.push("--extension", COORDINATION_EXTENSION);
+	}
+
 	const { model: routedModel, tier: complexityTier, usedFallback } = resolveModel(
 		agent.model,
 		agent.name,
@@ -533,6 +547,8 @@ async function buildPiArgs(
 	const mcpEnv: Record<string, string | undefined> = {
 		MCP_DIRECT_TOOLS: resolvedMCP.envValue,
 		PI_SUBAGENT_DEPTH: String(childDepth),
+		PI_COORDINATION_SESSION_ID: coordinationSessionId,
+		PI_SUBAGENT_NAME: agent.name,
 	};
 
 	if (resolvedMCP.loadAdapter) {
@@ -898,6 +914,14 @@ export default function (pi: ExtensionAPI) {
 		const depth = Number(process.env.PI_SUBAGENT_DEPTH ?? "0");
 		return Number.isFinite(depth) ? depth : 0;
 	})();
+	if (currentDepth === 0) {
+		// One-time-at-top-level init: sweep coordination session directories left
+		// behind by dead top-level processes. Best-effort — never let a prune
+		// failure block extension load.
+		try {
+			pruneStaleSessions();
+		} catch {}
+	}
 	const mainSessionUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 	let mainSessionModel: string | undefined;
 	let mainSessionTask: string | undefined;

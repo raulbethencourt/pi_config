@@ -49,23 +49,29 @@ This document covers the extension's own implementation.
 Rules are loaded once per distinct `cwd` (lazily, on first matching `tool_result`), not
 re-read from disk on every tool call — a project's rule files don't change mid-session.
 
-## No cross-extension coupling with hashline
+## Shared path-parsing module, not cross-extension coupling with hashline
 
-Both `hashline` and `rules-loader` hook `tool_result`. Early design drafts considered
-importing hashline's private `resolveSessionId` and `path-utils.ts` helpers directly,
-since the two extensions need near-identical logic (session-id resolution, stripping a
-trailing hashline-style selector suffix like `:14-20`/`:raw`/`:conflicts`/`:sel` before
-resolving a path to absolute, and — since `edit`'s tool input is hashline's own
-`{ input: string }` hashline-formatted body, not a plain `path` field — parsing one or
-more `¶path#tag` header lines out of that body). That was rejected: those helpers
-aren't exported from `hashline/index.ts`, and importing a sibling extension's internal
-files is brittle coupling — a refactor of hashline's internals could silently break
-rules-loader with no type error at the boundary. `index.ts` instead implements small,
-local, self-contained versions of all three (`stripSelector`/`resolveAbsolutePath`, and
-`extractEditPaths`, which mirrors hashline's `extractPathsFromEditInput` closely enough
-to parse the same header lines). Duplicating this logic is fine (and expected) because
-the selector-suffix format and the `¶path#tag` header format are both public/observable
-behavior — visible in tool call arguments — not a private API.
+Both `hashline` and `rules-loader` hook `tool_result`, and both need near-identical
+path-parsing logic: stripping a trailing hashline-style selector suffix like
+`:14-20`/`:raw`/`:conflicts`/`:sel` before resolving a path to absolute, and — since
+`edit`'s tool input is hashline's own `{ input: string }` hashline-formatted body, not a
+plain `path` field — parsing one or more `¶path#tag` header lines out of that body.
+
+Early design drafts hand-duplicated small local copies of this logic here rather than
+importing hashline's own `path-utils.ts`, on the grounds that importing a sibling
+extension's internal, unexported files would be brittle coupling — a refactor of
+hashline's internals could silently break rules-loader with no type error at the
+boundary. That rationale no longer applies: this parsing logic (`stripSelector`,
+`resolveAbsolutePath`, `extractPathsFromEditInput`) now lives in
+`agent/extensions/shared/hashline-paths.ts`, a neutral, dependency-free module (same
+style as `shared/format.ts` and `shared/content.ts`) that isn't private to either
+extension. `rules-loader/index.ts` imports all three directly from there — calling
+`extractPathsFromEditInput` from within `resolveToolPaths`'s `edit` branch — and
+`hashline` imports the same functions from the same module, so there is exactly one
+implementation of this parsing behavior instead of two hand-maintained copies that could
+drift out of sync. The selector-suffix format and the `¶path#tag` header format are
+both public/observable behavior anyway — visible in tool call arguments — so sharing
+the parser carries no more risk than duplicating it did.
 
 ## Non-deterministic handler order → additive-only mutation
 

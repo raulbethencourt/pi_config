@@ -1,53 +1,30 @@
-import path from "node:path";
-import { homedir } from "node:os";
+/**
+ * Backward-compatible re-export shim.
+ *
+ * The actual ¶path#tag parsing logic (`stripSelector`, `resolveAbsolutePath`,
+ * `extractPathsFromEditInput`) now lives in `../shared/hashline-paths.ts`,
+ * shared with `rules-loader` (which used to hand-duplicate this logic — see
+ * that extension's README). `hashline/index.ts` and `hashline/patcher.ts`
+ * import from the shared module directly and do not use this file anymore.
+ *
+ * This file is kept only so this import path keeps working for existing
+ * direct importers (`agent/tests/hashline-read-tagging.test.ts` and
+ * `agent/tests/hashline-write-retagging.test.ts`, which predate the
+ * shared-module extraction). `resolveAbsolutePath` here preserves this
+ * module's pre-existing `string | null` return contract — the shared
+ * module's canonical signature is `string | undefined` (rules-loader's prior
+ * convention) — by converting `undefined` to `null` at this boundary. New
+ * code should import `../shared/hashline-paths.ts` instead of this file.
+ */
+import {
+  extractPathsFromEditInput as sharedExtractPathsFromEditInput,
+  resolveAbsolutePath as sharedResolveAbsolutePath,
+  stripSelector as sharedStripSelector,
+} from "../shared/hashline-paths.ts";
 
-const SELECTOR_SUFFIX_RE = /:(?:\d+-\d+|raw|conflicts|sel)$/;
-const URL_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
+export const stripSelector = sharedStripSelector;
+export const extractPathsFromEditInput = sharedExtractPathsFromEditInput;
 
-export function stripSelector(rawPath: string): string {
-  return rawPath.replace(SELECTOR_SUFFIX_RE, "");
-}
-
-// Note: this resolver intentionally does not enforce any containment boundary relative to cwd.
-// It accepts ~-relative paths, absolute paths, and relative paths that can escape via ../.. .
-// Security therefore relies on the underlying read/write tools' own access controls.
-// A future configurable allowlist root could harden this by constraining resolved paths.
 export function resolveAbsolutePath(rawPath: string, cwd: string): string | null {
-  const trimmed = rawPath.trim();
-  if (!trimmed || trimmed.startsWith("pi://") || URL_RE.test(trimmed)) {
-    return null;
-  }
-
-  if (trimmed === "~") {
-    return homedir();
-  }
-
-  if (trimmed.startsWith("~/")) {
-    return path.join(homedir(), trimmed.slice(2));
-  }
-
-  if (path.isAbsolute(trimmed)) {
-    return trimmed;
-  }
-
-  return path.resolve(cwd, trimmed);
-}
-
-export function extractPathsFromEditInput(input: string, cwd: string): string[] {
-  const resolvedPaths = new Set<string>();
-
-  for (const line of input.split(/\r?\n/)) {
-    if (!line.startsWith("¶")) {
-      continue;
-    }
-
-    const hashIndex = line.lastIndexOf("#");
-    const rawPath = hashIndex >= 1 ? line.slice(1, hashIndex) : line.slice(1);
-    const absolutePath = resolveAbsolutePath(stripSelector(rawPath), cwd);
-    if (absolutePath) {
-      resolvedPaths.add(absolutePath);
-    }
-  }
-
-  return [...resolvedPaths];
+  return sharedResolveAbsolutePath(rawPath, cwd) ?? null;
 }

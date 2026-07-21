@@ -5,7 +5,7 @@ import { Type } from "typebox";
 import { SNAPSHOT_MAX_BYTES, normalizeToLF } from "./hash.ts";
 import { parseHashlineInput, applyPatch, validatePatch } from "./patcher.ts";
 import { createSnapshotStore, type SnapshotStore } from "./snapshot-store.ts";
-import { extractPathsFromEditInput, resolveAbsolutePath, stripSelector } from "./path-utils.ts";
+import { extractPathsFromEditInput, resolveAbsolutePath, stripSelector } from "../shared/hashline-paths.ts";
 
 const MAX_SESSIONS = 50;
 const HASHLINE_CUSTOM_EDIT_FLAG = "hashlineCustomEdit";

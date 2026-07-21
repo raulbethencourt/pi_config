@@ -1,11 +1,11 @@
 import * as path from "node:path";
-import { homedir } from "node:os";
 import type { ExtensionAPI, ToolResultEvent, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
 import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import { loadRules } from "./loader.ts";
 import { matchesAnyPattern } from "./matcher.ts";
 import { formatRuleInjection } from "./format.ts";
 import type { ParsedRule } from "./types.ts";
+import { extractPathsFromEditInput, resolveAbsolutePath, stripSelector } from "../shared/hashline-paths.ts";
 
 const TRACKED_TOOL_NAMES = new Set(["read", "write", "edit"]);
 
@@ -22,26 +22,6 @@ const CONFIG_DIR_NAME: string =
   typeof (piCodingAgent as Record<string, unknown>).CONFIG_DIR_NAME === "string"
     ? ((piCodingAgent as Record<string, unknown>).CONFIG_DIR_NAME as string)
     : ".pi";
-
-// Mirrors hashline's read/edit selector suffix format (`:14-20`, `:raw`,
-// `:conflicts`, `:sel`) — public/observable in tool call arguments, so
-// duplicating this small regex locally is fine. Importing hashline's own
-// path-utils.ts would instead be brittle coupling to a sibling extension's
-// internals, which aren't exported from its package entry point.
-const SELECTOR_SUFFIX_RE = /:(?:\d+-\d+|raw|conflicts|sel)$/;
-
-function stripSelector(rawPath: string): string {
-  return rawPath.replace(SELECTOR_SUFFIX_RE, "");
-}
-
-function resolveAbsolutePath(rawPath: string, cwd: string): string | undefined {
-  const trimmed = rawPath.trim();
-  if (!trimmed) return undefined;
-  if (trimmed === "~") return homedir();
-  if (trimmed.startsWith("~/")) return path.join(homedir(), trimmed.slice(2));
-  if (path.isAbsolute(trimmed)) return trimmed;
-  return path.resolve(cwd, trimmed);
-}
 
 /**
  * Local, self-contained session-id resolution — deliberately not imported
@@ -74,36 +54,16 @@ function extractToolPath(event: ToolResultEvent): string | undefined {
  * `{ input: string }` — a hashline-formatted string that can carry ONE OR
  * MORE `¶path#tag` header lines, one per touched file/hunk — not the plain
  * `{ path: string }` shape `read`/`write` use. `extractToolPath` above
- * therefore always returns `undefined` for `edit`, which is exactly the bug
- * this function fixes: it mirrors hashline's own `extractPathsFromEditInput`
- * (`hashline/path-utils.ts`) closely enough to parse the same header lines,
- * but is deliberately NOT imported from there — see the "No cross-extension
- * coupling with hashline" rationale already in this file's header comment
- * and this extension's README (duplicating this small, public/observable
- * header-format parsing is fine; importing hashline's private internals
- * would be brittle coupling to a sibling extension that isn't exported from
- * its package entry point).
+ * therefore always returns `undefined` for `edit`; parsing those header
+ * lines is delegated to the shared `extractPathsFromEditInput` (imported
+ * from `../shared/hashline-paths.ts`, the module hashline's own edit-input
+ * parsing also lives in — see this extension's README).
  */
-function extractEditPaths(event: ToolResultEvent, cwd: string): string[] {
+function extractEditInput(event: ToolResultEvent): string {
   const rawInput = event.input as unknown;
-  const editInput =
-    typeof rawInput === "string"
-      ? rawInput
-      : typeof (rawInput as Record<string, unknown> | undefined)?.input === "string"
-        ? ((rawInput as Record<string, unknown>).input as string)
-        : "";
-
-  const resolvedPaths = new Set<string>();
-  for (const line of editInput.split(/\r?\n/)) {
-    if (!line.startsWith("¶")) continue;
-
-    const hashIndex = line.lastIndexOf("#");
-    const rawPath = hashIndex >= 1 ? line.slice(1, hashIndex) : line.slice(1);
-    const absolutePath = resolveAbsolutePath(stripSelector(rawPath), cwd);
-    if (absolutePath) resolvedPaths.add(absolutePath);
-  }
-
-  return [...resolvedPaths];
+  if (typeof rawInput === "string") return rawInput;
+  const inputField = (rawInput as Record<string, unknown> | undefined)?.input;
+  return typeof inputField === "string" ? inputField : "";
 }
 
 /**
@@ -114,7 +74,7 @@ function extractEditPaths(event: ToolResultEvent, cwd: string): string[] {
  * of two diverging code paths.
  */
 function resolveToolPaths(event: ToolResultEvent, cwd: string): string[] {
-  if (event.toolName === "edit") return extractEditPaths(event, cwd);
+  if (event.toolName === "edit") return extractPathsFromEditInput(extractEditInput(event), cwd);
 
   const rawPath = extractToolPath(event);
   if (!rawPath) return [];

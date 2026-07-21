@@ -2,7 +2,7 @@ import path from "node:path";
 import { computeFileHash, normalizeToLF } from "./hash.ts";
 import { readTextFile, writeTextFile } from "./filesystem.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
-import { resolveAbsolutePath, stripSelector } from "./path-utils.ts";
+import { resolveAbsolutePath, stripSelector } from "../shared/hashline-paths.ts";
 
 export interface PatchSection {
   path: string;
