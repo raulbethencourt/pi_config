@@ -1509,7 +1509,7 @@ describe("findBlockedOutputRedirectTarget — verified live bypass regression (u
 });
 
 // ── output-redirect-target bypass — `>&word` combined redirect-with-fd-
-// duplication form (item #27, security-auditor-deep finding on top of item
+// duplication form (item #28, security-auditor-deep finding on top of item
 // #22) ───────────────────────────────────────────────────────────────────
 //
 // `>&word` is genuinely ambiguous in bash: `>&2`/`2>&1`/`>&-` are
@@ -1536,7 +1536,7 @@ describe("findBlockedOutputRedirectTarget — verified live bypass regression (u
 // except that a plain-string target which is a bare non-negative integer or
 // `-` is recognized as fd-duplication/fd-close and excluded — it is not a
 // write target at all.
-describe("findBlockedOutputRedirectTarget — `>&word` combined redirect-with-fd-duplication form (item #27)", () => {
+describe("findBlockedOutputRedirectTarget — `>&word` combined redirect-with-fd-duplication form (item #28)", () => {
   it("[reported exploit] blocks `echo KEY >& $(printf '\\57home\\57rabeta\\57.ssh\\57authorized_keys')` as substitution-computed — the octal-escaped substitution target sits in `>&`'s target position, which the taint check now recognizes", () => {
     const blocked = findBlockedOutputRedirectTarget(
       "echo KEY >& $(printf '\\57home\\57rabeta\\57.ssh\\57authorized_keys')",

@@ -191,6 +191,43 @@ describe("analyzeBashCommand", () => {
     const risk = analyzeBashCommand("echo test > /etc/passwd");
     expect(risk).not.toBeNull();
   });
+  // item #29: REDIRECT_OPS (the promptable "medium risk" UX classifier in
+  // analyzeBashCommandBase) only lists >, >>, 2>, 2>> and is missing >& — so
+  // a genuine >&word write redirect to a non-protected path currently gets
+  // NO medium-risk classification at all here, unlike the equivalent >/>>
+  // form just above. This is distinct from findBlockedOutputRedirectTarget's
+  // unconditional hard-block, which already fully covers >&word (item #28)
+  // — this test is about the separate promptable classifier only.
+  it("flags output redirection via >& (combined redirect-with-fd-duplication form) to a non-protected path with at least medium severity", () => {
+    const risk = analyzeBashCommand("echo test >& some-non-protected-file.txt");
+    expect(risk).not.toBeNull();
+    expect(["medium", "high"]).toContain(risk!.severity);
+  });
+  // Regression for item #29's initial fix: adding ">&" to REDIRECT_OPS
+  // without excluding fd-duplication/close targets caused hasHarmfulRedirect
+  // to flag the extremely common, entirely benign `2>&1`/`>&2`/`>&-` idioms
+  // as a risky filesystem-overwriting redirect — none of these ever touch
+  // the filesystem. Mirrors extractOutputRedirectTargets' pre-existing
+  // isFdDuplicationOrCloseWord exclusion (item #28) applied to this separate
+  // promptable classifier.
+  it("does not flag >&2 (fd duplication) as a harmful redirect", () => {
+    const risk = analyzeBashCommand("echo error >&2");
+    if (risk) {
+      expect(risk.reasons.some(r => r.includes("redirection"))).toBe(false);
+    }
+  });
+  it("does not flag 2>&1 (fd duplication) as a harmful redirect", () => {
+    const risk = analyzeBashCommand("some-command 2>&1");
+    if (risk) {
+      expect(risk.reasons.some(r => r.includes("redirection"))).toBe(false);
+    }
+  });
+  it("does not flag >&- (fd close) as a harmful redirect", () => {
+    const risk = analyzeBashCommand("echo test >&-");
+    if (risk) {
+      expect(risk.reasons.some(r => r.includes("redirection"))).toBe(false);
+    }
+  });
   it("does not flag redirection to /dev/null", () => {
     const risk = analyzeBashCommand("echo test > /dev/null");
     // Should only have null or no harmful redirect reason

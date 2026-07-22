@@ -445,12 +445,18 @@ function analyzeBashCommandBase(command: string): Risk | null {
     // dangerous pipe patterns (curl|bash, pipe-to-shell) are caught at
     // segment level with high severity.
     // Redirections to /dev/null, /dev/stdout, /dev/stderr are always harmless — skip them.
-    const REDIRECT_OPS = new Set([">", ">>", "2>", "2>>"]);
+    const REDIRECT_OPS = new Set([">", ">>", "2>", "2>>", ">&"]);
     const NULL_TARGETS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr"]);
     const hasHarmfulRedirect = tokens.some((t, i) => {
         if (!isOpToken(t) || !REDIRECT_OPS.has(t.op)) return false;
         const next = tokens[i + 1];
         const target = typeof next === "string" ? next : null;
+        // >& fd-duplication/close targets (>&2, >&-) never touch the
+        // filesystem — same exclusion as extractOutputRedirectTargets'
+        // isFdDuplicationOrCloseWord check, applied here so this promptable
+        // UX classifier doesn't flag the extremely common `2>&1`/`>&2`
+        // idioms as a risky filesystem-overwriting redirect.
+        if (t.op === ">&" && target !== null && isFdDuplicationOrCloseWord(target)) return false;
         return target === null || !NULL_TARGETS.has(target);
     });
     if (hasHarmfulRedirect) {
@@ -1156,7 +1162,7 @@ export function isReadOnlyBashCommand(command: string): boolean {
     return segments.every(isReadOnlySegment);
 }
 
-// Item #27: `>&word` is bash's combined redirect-with-fd-duplication form,
+// Item #28: `>&word` is bash's combined redirect-with-fd-duplication form,
 // and it is genuinely ambiguous at the token level between two very
 // different meanings:
 //   - fd duplication (`2>&1`, `>&2`, `>&12`) — copies one file descriptor
@@ -1176,7 +1182,7 @@ function isFdDuplicationOrCloseWord(word: string): boolean {
     return /^\d+$/.test(word) || word === "-";
 }
 
-// Item #18 (extended by item #27 for `>&word`): extracts every static
+// Item #18 (extended by item #28 for `>&word`): extracts every static
 // (non-substitution-computed) output-redirect TARGET from a bash command
 // string — the file a `>`/`>>`/`>&word` write would land on — so callers can
 // hard-block a redirect into a protected path even in contexts
@@ -1376,7 +1382,7 @@ function evaluateRedirectTargetTaint(
 // produce.
 //
 // Scans the same token stream as extractOutputRedirectTargets (same clobber-
-// hop handling for `>|`, same `>&` matching added by item #27), but instead
+// hop handling for `>|`, same `>&` matching added by item #28), but instead
 // of extracting a plain-string/glob target, evaluates whatever sits in
 // target position via evaluateRedirectTargetTaint above. Returns the first
 // tainted match's best-effort target text, or null if no redirect target is
