@@ -1022,10 +1022,10 @@ describe("findBlockedOutputRedirectTarget", () => {
     expect(findBlockedOutputRedirectTarget("ls ~/.ssh > /tmp/listing.txt")).toBeNull();
   });
 
-  it("does NOT false-positive on a dynamic benign substitution-based filename", () => {
+  it("blocks a dynamic benign substitution-based filename — accepted usability tradeoff of the unconditional suffix-position taint policy (item #22 follow-up): the static analysis here cannot distinguish a benign substitution (`date +%s`) from a malicious one that computes a path separator at runtime (e.g. via a `printf` octal escape) without either ever containing a literal `/` or `~` in its own source text, so ANY substitution in a redirect target is now blocked, not just ones matching a path-like pattern", () => {
     expect(
       findBlockedOutputRedirectTarget("cat file.txt > out-$(date +%s).log"),
-    ).toBeNull();
+    ).not.toBeNull();
   });
 
   it("does NOT false-positive when there is no redirect at all (confirms no interference with unrelated existing exemption logic)", () => {
@@ -1238,5 +1238,358 @@ describe("findBlockedOutputRedirectTarget — $HOME resolution hard-block regres
 describe("isReadOnlyBashCommand — unaffected by threading env into its shellParse call (non-regression)", () => {
   it("still classifies `cat $HOME/.ssh/id_rsa` as read-only", () => {
     expect(isReadOnlyBashCommand("cat $HOME/.ssh/id_rsa")).toBe(true);
+  });
+});
+
+// ── output-redirect-target bypass — substitution-computed targets (item #22,
+// pi-improvement-plan.md) ──────────────────────────────────────────────────
+//
+// Current design: a `findSubstitutionTaintedRedirectTarget(command: string):
+// string | null` helper, wired into `findBlockedOutputRedirectTarget` so a
+// match reports `{ target, kind: "substitution-computed" }`. For each
+// `>`/`>>` redirect target extracted by `extractOutputRedirectTargets`:
+//
+//   - If a command/process-substitution marker (`$(`, backtick, `<(`, `>(`,
+//     or a bare trailing `$`) appears anywhere in the target — at the START
+//     (no literal prefix) or in SUFFIX position (non-empty literal text
+//     precedes it) — block unconditionally.
+//
+// This was originally a position-aware rule that only blocked a SUFFIX-
+// position marker when the literal prefix or the substitution's own source
+// text contained a `/` or `~` character. That rule was closed to
+// unconditional after a verified live bypass: a substitution can compute a
+// leading path-traversal sequence at RUNTIME via shell escaping (e.g.
+// `printf '\57..\57.ssh\57authorized_keys'`, where `\57` is the octal escape
+// for `/`) without that character ever appearing in the substitution's own
+// source text, so neither disjunct of the old rule could catch it regardless
+// of what literal prefix preceded it. There is no way to statically
+// distinguish a benign dynamic substitution (`date +%s`) from a malicious one
+// using only the command's source text, so this policy accepts the
+// usability cost of blocking both.
+//
+// This is a NEW, narrower-scoped check than item #16's
+// extractSubstitutionSpans/findBlockedProtectedFolderReference path: that
+// existing mechanism only catches a substitution whose *inner content*
+// textually contains a literal protected path (e.g.
+// `$(echo ~/.ssh/authorized_keys)`) via a raw substring/pattern match against
+// PROTECTED_FOLDERS/PROTECTED_PATH_PATTERNS. It does NOT catch a
+// variable-indirected path built from a substitution (case 2 below), nor
+// does it hard-block a substitution-computed target merely for being
+// substitution-computed the way this new check does. The two mechanisms are
+// complementary, not duplicative — see the existing
+// "output-redirect bypass — substitution-computed targets already covered by
+// item #16" describe block above for the item #16 side of this boundary.
+describe("findBlockedOutputRedirectTarget — substitution-computed redirect targets (item #22)", () => {
+  it("[start-of-target, $(...) form] blocks `cat > $(echo ~/.ssh/authorized_keys)`", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat > $(echo ~/.ssh/authorized_keys)",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[start-of-target, variable-indirected path — currently un-caught by any existing mechanism, including item #16's extractSubstitutionSpans] blocks `X=.ssh; cat > $(echo ~/$X/authorized_keys)`", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "X=.ssh; cat > $(echo ~/$X/authorized_keys)",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[start-of-target, backtick form] blocks `cat > `echo ~/.ssh/authorized_keys``", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat > `echo ~/.ssh/authorized_keys`",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[start-of-target, <(...) process-substitution form] blocks `cat > <(echo hi)`", () => {
+    const blocked = findBlockedOutputRedirectTarget("cat > <(echo hi)");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[start-of-target, >(...) process-substitution form — note: extractOutputRedirectTargets alone returns [] for this today, since shell-quote splits >( across two separate tokens with no plain-string/glob target for the existing scan to pick up; this is a currently-open gap the new check must also close] blocks `cat > >(tee /tmp/file.log)`", () => {
+    const blocked = findBlockedOutputRedirectTarget("cat > >(tee /tmp/file.log)");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[start-of-target, >(...) wrapping an inner literal protected-path redirect] blocks `cat payload > >(cat > ~/.ssh/authorized_keys)` and reports substitution-computed — the new check fires at the outer >( marker before any flat scan would reach the inner literal target", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat payload > >(cat > ~/.ssh/authorized_keys)",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  // NOTE: `cat file.txt > out-$(date +%s).log` (a timestamp-suffixed output
+  // filename) is the existing, immutable regression test at lines ~1025-1029
+  // in this file ("blocks a dynamic benign substitution-based filename") and
+  // is deliberately NOT re-added or re-asserted here — this describe block's
+  // job is only to confirm the cases below are consistent with it under the
+  // now-unconditional policy.
+
+  it("[suffix position, single-quoted, no / or ~ anywhere] blocks `cat payload > 'report_$(2024).txt'` — any suffix-position marker is now unconditionally tainted, regardless of the literal prefix or the substitution's own source text", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat payload > 'report_$(2024).txt'",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[suffix position, double-quoted — textually identical to the single-quoted case above after shell-quote tokenization, since shell-quote discards quote-type metadata once parsing is done] blocks `cat payload > \"report_$(2024).txt\"`", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      'cat payload > "report_$(2024).txt"',
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[bare trailing $ as a separate token, not glued to the target] does NOT block `cat > file $` — the extracted redirect target is `file` only, unaffected by the stray, separately-tokenized `$`, so this is not a substitution marker at all and stays outside the unconditional policy", () => {
+    expect(findBlockedOutputRedirectTarget("cat > file $")).toBeNull();
+  });
+
+  it("[malformed/unclosed substitution, suffix position] blocks `cat > out_$(date +%s` — a suffix-position marker is now unconditionally tainted even when the substitution is unclosed/malformed", () => {
+    const blocked = findBlockedOutputRedirectTarget("cat > out_$(date +%s");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[malformed/unclosed substitution, but marker at START of target] blocks `cat > $(echo ~/.ssh/authorized_keys` — the start-of-target clause fires regardless of well-formedness", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat > $(echo ~/.ssh/authorized_keys",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[suffix position, the substitution's own inner content contains a / or ~] blocks `cat > out_$(echo ~/.ssh/authorized_keys).txt`", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat > out_$(echo ~/.ssh/authorized_keys).txt",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[suffix position, opaque call, no / or ~ anywhere in its own text — previously an ACCEPTED LIMITATION of the position-aware design, now closed by the unconditional policy: an opaque function/command name (e.g. compute_secret_path) gives no textual signal to evaluate, but that is no longer relevant since presence of the marker alone is sufficient] blocks `cat > out_$(compute_secret_path).txt`", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat > out_$(compute_secret_path).txt",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+});
+
+// ── output-redirect-target bypass — bare `..` literal prefix glued to a
+// suffix-position substitution, where the substitution computes a path
+// character (e.g. `/`) at RUNTIME rather than containing one in its own
+// source text (reported reproducible bypass on top of item #22) ──────────
+//
+// HISTORICAL NOTE: evaluateRedirectTargetTaint's SUFFIX position branch used
+// to only block when `PATH_CHAR.test(prefix) || PATH_CHAR.test(inner)` — i.e.
+// when a literal `/` or `~` character appeared in either the pre-marker
+// literal text or the substitution's own source text. A bare `..` prefix (no
+// `/` or `~` in its source) followed by a substitution that constructs a `/`
+// at runtime (e.g. via `printf '\57...'`, where `\57` is the octal escape for
+// `/`) satisfied neither disjunct, so the check misclassified it as
+// untainted even though `..` immediately followed by ANY computed suffix can
+// traverse upward from cwd the moment the substitution's output contains or
+// is preceded by a path separator. That position-aware rule (and the narrower
+// `..`-prefix-only patch that followed it) has since been superseded: SUFFIX
+// position is now unconditionally tainted regardless of what precedes the
+// marker (see the "substitution-computed redirect targets (item #22)"
+// describe block above), so every test below remains blocked, just via the
+// broader unconditional rule rather than the `..`-specific one originally
+// targeted here.
+describe("findBlockedOutputRedirectTarget — bare `..` prefix + suffix-position substitution (runtime-computed path character, reported bypass on item #22)", () => {
+  it("[reported exploit] blocks `echo KEY >> ..$(printf '\\57.ssh\\57authorized_keys')` — the octal escape `\\57` decodes to `/` only at runtime, so neither the `..` prefix nor the substitution's own source text contains a literal `/` or `~`; caught today by the unconditional suffix-position rule regardless", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "echo KEY >> ..$(printf '\\57.ssh\\57authorized_keys')",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[general form, any substitution content] blocks `cat payload >> ..$(echo whatever)` — a bare `..` prefix in suffix position is inherently unsafe regardless of what the substitution computes, since it can traverse upward from cwd no matter what text `echo whatever` itself contains", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat payload >> ..$(echo whatever)",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[consistency check, no longer a 'control'] blocks `cat file.txt > out_$(date +%s).log` — a benign, non-`..`, non-path-containing literal prefix (`out_`) is now blocked too under the unconditional suffix-position policy; this is the same accepted usability tradeoff documented on the immutable regression test at ~line 1025", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat file.txt > out_$(date +%s).log",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+});
+
+// ── output-redirect-target bypass — bare `.` (single dot, NOT `..`) literal
+// prefix glued to a suffix-position substitution, where the substitution
+// constructs a `/../` traversal sequence at RUNTIME via shell escaping (e.g.
+// `printf`'s octal escapes) rather than containing a literal `/` anywhere in
+// the substitution's own source text (adjacent bypass found on top of the
+// just-applied bare `..`-prefix fix above) ─────────────────────────────────
+//
+// HISTORICAL NOTE: the old `PURE_TRAVERSAL_PREFIX` regex
+// (`/^(?:\.\.?\/)*\.\.?$/`) plus `PATH_CHAR` only recognized specific literal
+// prefix shapes (`..`, bare `.`, `/`- or `~`-containing text) as tainted. A
+// literal prefix of a single `.` followed by a substitution that constructs
+// `/../` at runtime (e.g. `.$(printf '\57..\57.ssh\57authorized_keys')`,
+// which resolves to `../.ssh/authorized_keys` relative to cwd) was the
+// motivating case for extending that regex, but the whole position-aware
+// prefix-shape approach has since been superseded: SUFFIX position is now
+// unconditionally tainted regardless of what precedes the marker, so the
+// tests below remain blocked via that broader rule rather than any
+// prefix-shape-specific logic.
+describe("findBlockedOutputRedirectTarget — bare `.` prefix + suffix-position substitution (adjacent bypass on top of the `..`-prefix fix, item #22)", () => {
+  it("[reported exploit] blocks `echo KEY >> .$(printf '\\57..\\57.ssh\\57authorized_keys')` — the octal escapes decode to `/../` only at runtime, so neither the bare `.` prefix nor the substitution's own source text contains a literal `/` or `~`; caught today by the unconditional suffix-position rule regardless", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "echo KEY >> .$(printf '\\57..\\57.ssh\\57authorized_keys')",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[quoted-literal form of the same exploit] blocks `echo KEY >> \".$(printf '\\57..\\57.ssh\\57authorized_keys')\"` — the whole target survives as a single flattened quoted-string token", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "echo KEY >> \".$(printf '\\57..\\57.ssh\\57authorized_keys')\"",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[general form, any substitution content, guards the root cause rather than one exact PoC] blocks `cat payload >> .$(echo whatever)` — a bare `.` prefix in suffix position is inherently unsafe regardless of what the substitution computes", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat payload >> .$(echo whatever)",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  // [control] `cat file.txt > out_$(date +%s).log` (a real, non-dot literal
+  // prefix) is already covered by the immutable primary regression test
+  // (~line 1025) and by the "[consistency check, no longer a 'control']" test
+  // in the `..`-prefix describe block above, with the exact same command
+  // string — not re-added here to avoid duplicating it.
+});
+
+// ── output-redirect-target bypass — verified live bypass regression tests
+// (unconditional suffix-position policy) ────────────────────────────────────
+//
+// Confirms the two previously-open bypass examples that motivated closing
+// the SUFFIX-position rule to unconditional (see the "substitution-computed
+// redirect targets (item #22)" describe block's header comment above): a
+// substitution can compute a leading `/../` path-traversal sequence at
+// RUNTIME via shell escaping (octal escapes in `printf`) without a `/` or `~`
+// character ever appearing in the substitution's own source text, so no
+// static text-pattern check on the substitution's source — regardless of
+// what literal prefix precedes it — could have caught these before this fix.
+describe("findBlockedOutputRedirectTarget — verified live bypass regression (unconditional suffix-position policy)", () => {
+  it("[verified live bypass] blocks `cat payload >> out_$(printf '\\57..\\57.ssh\\57authorized_keys')` — resolves at runtime to `.ssh/authorized_keys` relative to cwd; the `out_` literal prefix contains no `/` or `~`, and neither does the printf call's own source text", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat payload >> out_$(printf '\\57..\\57.ssh\\57authorized_keys')",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[verified live bypass, alternate literal prefix] blocks `cat payload >> x$(printf '\\57..\\57.ssh\\57authorized_keys')`", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat payload >> x$(printf '\\57..\\57.ssh\\57authorized_keys')",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+});
+
+// ── output-redirect-target bypass — `>&word` combined redirect-with-fd-
+// duplication form (item #27, security-auditor-deep finding on top of item
+// #22) ───────────────────────────────────────────────────────────────────
+//
+// `>&word` is genuinely ambiguous in bash: `>&2`/`2>&1`/`>&-` are
+// fd-duplication/fd-close forms that never touch the filesystem, but
+// `>&word` for any non-numeric, non-`-` word is a real output-redirect write
+// target, identical in effect to `> word`. shell-quote tokenizes ALL of
+// these identically as `{op:">&"}` followed by a plain string token — there
+// is no token-shape difference between `>&2` and `>&word` (verified
+// empirically against the installed shell-quote version: both parse to
+// `[..., {op:">&"}, "<word>"]`). Before this fix, extractOutputRedirectTargets
+// only matched `{op:">"}`/`{op:">>"}` tokens, so `>&word` targets were never
+// extracted at all — invisible to the protected-path/glob checks in
+// findBlockedOutputRedirectTarget, to the substitution-taint check in
+// findSubstitutionTaintedRedirectTarget (which only matched the same two
+// ops), AND to the raw-text commandReferencesPath fallback once the target
+// is obfuscated via command substitution with octal-escape encoding (same
+// obfuscation class as items #22/#27's `.$(printf '\57...')` bypasses, just
+// reached through a redirect operator this pipeline didn't recognize at
+// all).
+//
+// Fix: extractOutputRedirectTargets, findSubstitutionTaintedRedirectTarget,
+// and (transitively) findBlockedOutputRedirectTarget now also match
+// `{op:">&"}`, extracting/evaluating its target the same way as `>`/`>>`,
+// except that a plain-string target which is a bare non-negative integer or
+// `-` is recognized as fd-duplication/fd-close and excluded — it is not a
+// write target at all.
+describe("findBlockedOutputRedirectTarget — `>&word` combined redirect-with-fd-duplication form (item #27)", () => {
+  it("[reported exploit] blocks `echo KEY >& $(printf '\\57home\\57rabeta\\57.ssh\\57authorized_keys')` as substitution-computed — the octal-escaped substitution target sits in `>&`'s target position, which the taint check now recognizes", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "echo KEY >& $(printf '\\57home\\57rabeta\\57.ssh\\57authorized_keys')",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("substitution-computed");
+  });
+
+  it("[plain protected-path form, no substitution obfuscation] blocks `echo KEY >& ~/.ssh/authorized_keys`", () => {
+    const blocked = findBlockedOutputRedirectTarget("echo KEY >& ~/.ssh/authorized_keys");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("protected-folder");
+  });
+
+  it("[plain protected-path form, absolute path] blocks `echo KEY >& ${HOME}/.ssh/authorized_keys`", () => {
+    const blocked = findBlockedOutputRedirectTarget(`echo KEY >& ${HOME}/.ssh/authorized_keys`);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("protected-folder");
+  });
+
+  it("[plain protected-write-only form] blocks `echo KEY >& ~/.bashrc`", () => {
+    const blocked = findBlockedOutputRedirectTarget("echo KEY >& ~/.bashrc");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("protected-write-only");
+  });
+
+  it("[non-regression, numeric fd-duplication form] does NOT block `echo test 2>&1` — a bare non-negative integer following `>&` is fd-duplication, never a write target", () => {
+    expect(findBlockedOutputRedirectTarget("echo test 2>&1")).toBeNull();
+  });
+
+  it("[non-regression, numeric fd-duplication form] does NOT block `echo test >&2`", () => {
+    expect(findBlockedOutputRedirectTarget("echo test >&2")).toBeNull();
+  });
+
+  it("[non-regression, fd-close form] does NOT block `echo test >&-`", () => {
+    expect(findBlockedOutputRedirectTarget("echo test >&-")).toBeNull();
+  });
+
+  it("extractOutputRedirectTargets extracts a non-numeric `>&word` target as a real write target", () => {
+    expect(extractOutputRedirectTargets("echo KEY >& ~/.ssh/authorized_keys")).toEqual([
+      "~/.ssh/authorized_keys",
+    ]);
+  });
+
+  it("extractOutputRedirectTargets excludes the numeric fd-duplication form (2>&1) — no target extracted", () => {
+    expect(extractOutputRedirectTargets("echo test 2>&1")).toEqual([]);
+  });
+
+  it("extractOutputRedirectTargets excludes the fd-close form (>&-) — no target extracted", () => {
+    expect(extractOutputRedirectTargets("echo test >&-")).toEqual([]);
+  });
+
+  it("[non-regression] does NOT false-positive on an unrelated `>&word` writing to a harmless path", () => {
+    expect(findBlockedOutputRedirectTarget("echo KEY >& /tmp/output.txt")).toBeNull();
   });
 });

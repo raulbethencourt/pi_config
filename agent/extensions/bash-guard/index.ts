@@ -1156,41 +1156,70 @@ export function isReadOnlyBashCommand(command: string): boolean {
     return segments.every(isReadOnlySegment);
 }
 
-// Item #18: extracts every static (non-substitution-computed) output-redirect
-// TARGET from a bash command string — the file a `>`/`>>` write would land
-// on — so callers can hard-block a redirect into a protected path even in
-// contexts (headless/subagent mode) where the promptable "medium risk"
-// classification in analyzeBashCommandBase is never surfaced to a user (see
-// the comment on isReadOnlyBashCommand's protected-path check below for why
-// that classifier alone isn't sufficient).
+// Item #27: `>&word` is bash's combined redirect-with-fd-duplication form,
+// and it is genuinely ambiguous at the token level between two very
+// different meanings:
+//   - fd duplication (`2>&1`, `>&2`, `>&12`) — copies one file descriptor
+//     onto another, never touches the filesystem. Bash recognizes this form
+//     only when the word following `>&` is a bare non-negative integer.
+//   - the fd-close form (`>&-`) — closes the current output fd, also never
+//     touches the filesystem.
+//   - a genuine output-redirect write target (`>&word`, `>&~/.ssh/authorized_keys`)
+//     — for any OTHER word, bash treats `>&word` exactly like `> word`: a
+//     real write to a file named `word`.
+// shell-quote tokenizes ALL of these identically as `{op:">&"}` followed by
+// a plain string token (verified empirically via a probe against the
+// installed shell-quote version — there is no token-shape difference between
+// `>&2` and `>&word`). The only way to tell them apart is the VALUE of that
+// following string, via isFdDuplicationOrCloseWord below.
+function isFdDuplicationOrCloseWord(word: string): boolean {
+    return /^\d+$/.test(word) || word === "-";
+}
+
+// Item #18 (extended by item #27 for `>&word`): extracts every static
+// (non-substitution-computed) output-redirect TARGET from a bash command
+// string — the file a `>`/`>>`/`>&word` write would land on — so callers can
+// hard-block a redirect into a protected path even in contexts
+// (headless/subagent mode) where the promptable "medium risk" classification
+// in analyzeBashCommandBase is never surfaced to a user (see the comment on
+// isReadOnlyBashCommand's protected-path check below for why that classifier
+// alone isn't sufficient).
 //
 // Parses with the same shellParse (shell-quote) used elsewhere in this file
 // and flat-scans the resulting token array — no segment splitting on
 // &&/;/|/&, since those are their own separate op tokens that never sit
 // between a redirect op and its target, so chaining/piping/backgrounding
-// can't hide a redirect from this scan. For each `{op:">"}` / `{op:">>"}`
-// token:
-//   - the >| clobber form decomposes into {op:">"} then {op:"|"} then the
-//     target, so a `{op:"|"}` immediately following a redirect op means "hop
-//     one further" rather than "this is the target".
-//   - a plain-string next token is the target; a `{op:"glob", pattern}`
-//     token (shell-quote's representation of a target containing an
-//     unquoted `*`/`?`, e.g. `> ~/.bashr?`) is also a target — its `pattern`
-//     field is the literal glob string, and a real shell would glob-expand
-//     it at execution time, so treating it as a non-target here would
-//     silently let a redirect into a protected path bypass the checks below.
-//     anything else (another op token, or a substitution-boundary token like
-//     the "$"/"("/")" tokens shell-quote emits for a `$(...)` target) is left
-//     alone — resolving a substitution-computed target is deliberately NOT
-//     this function's job, see findBlockedOutputRedirectTarget below.
+// can't hide a redirect from this scan. For each `{op:">"}` / `{op:">>"}` /
+// `{op:">&"}` token:
+//   - the >| clobber form (only applies to `>`/`>>`) decomposes into
+//     {op:">"} then {op:"|"} then the target, so a `{op:"|"}` immediately
+//     following a redirect op means "hop one further" rather than "this is
+//     the target". `>&` has no clobber form, so this hop is skipped for it.
+//   - for `>&` specifically, a plain-string next token that satisfies
+//     isFdDuplicationOrCloseWord (a bare integer, or `-`) is fd-duplication/
+//     fd-close, NOT a write target, and is skipped entirely — it never
+//     touches the filesystem, so treating it as a redirect target would be
+//     both semantically wrong and would misapply the protected-path/glob
+//     checks below to a bare number like "1" or "2".
+//   - otherwise a plain-string next token is the target; a `{op:"glob",
+//     pattern}` token (shell-quote's representation of a target containing
+//     an unquoted `*`/`?`, e.g. `> ~/.bashr?`) is also a target — its
+//     `pattern` field is the literal glob string, and a real shell would
+//     glob-expand it at execution time, so treating it as a non-target here
+//     would silently let a redirect into a protected path bypass the checks
+//     below. anything else (another op token, or a substitution-boundary
+//     token like the "$"/"("/")" tokens shell-quote emits for a `$(...)`
+//     target) is left alone — resolving a substitution-computed target is
+//     deliberately NOT this function's job, see findBlockedOutputRedirectTarget
+//     below (findSubstitutionTaintedRedirectTarget also now matches `>&`, so
+//     a substitution-computed `>&word` target — e.g. `>& $(printf ...)` — is
+//     still caught, just via that separate function, not this one).
 //
 // Fd-numbered forms (`2>`) tokenize as a separate leading string ("2")
 // followed by a plain `>` op, so the fd-number never sits between the op and
 // its target — no special-casing needed. `&>`/`&>>` tokenize as {op:"&"}
 // then {op:">"}/{op:">>"} — again no special-casing needed, since this scan
-// matches `>`/`>>` regardless of what precedes them. Fd-duplication
-// (`2>&1`) tokenizes as a distinct `{op:">&"}` op, which this scan naturally
-// excludes since it only matches the exact ops `>` and `>>`.
+// matches `>`/`>>` regardless of what precedes them.
 export function extractOutputRedirectTargets(command: string): string[] {
     let tokens: Token[];
     try {
@@ -1202,13 +1231,14 @@ export function extractOutputRedirectTargets(command: string): string[] {
     const targets: string[] = [];
     for (let i = 0; i < tokens.length; i++) {
         const t = tokens[i];
-        if (!isOpToken(t) || (t.op !== ">" && t.op !== ">>")) continue;
+        if (!isOpToken(t) || (t.op !== ">" && t.op !== ">>" && t.op !== ">&")) continue;
 
         let next = tokens[i + 1];
-        if (isOpToken(next) && next.op === "|") {
-            next = tokens[i + 2]; // >| clobber form: hop one further
+        if (t.op !== ">&" && isOpToken(next) && next.op === "|") {
+            next = tokens[i + 2]; // >| clobber form: hop one further (not applicable to >&)
         }
         if (typeof next === "string") {
+            if (t.op === ">&" && isFdDuplicationOrCloseWord(next)) continue; // fd dup/close, not a write
             targets.push(next);
         } else if (isOpToken(next) && next.op === "glob" && typeof next.pattern === "string") {
             targets.push(next.pattern);
@@ -1231,6 +1261,163 @@ export function extractOutputRedirectTargets(command: string): string[] {
 // of chasing individual syntax forms.
 const GLOB_METACHARACTERS = /[*?[\]{}]/;
 
+// Item #22: marker substrings that can appear glued together with literal
+// text INSIDE a single flattened string token — this only happens when the
+// token came from a quoted literal (shell-quote discards quote-type metadata
+// once parsing is done, so a single- or double-quoted string that merely
+// *contains* substitution-looking text is indistinguishable, at the token
+// level, from one that doesn't — an accepted trade-off, not something this
+// function tries to resolve). Unquoted `$(` always splits into a separate
+// `"$"` string token + `{op:"("}` token (see the split-marker branch in
+// evaluateRedirectTargetTaint below), so this list is only ever consulted for
+// the quoted-literal case.
+const SUFFIX_MARKER_SUBSTRINGS = ["$(", "<(", ">(", "`"] as const;
+
+function findEarliestSuffixMarker(
+    s: string,
+): { index: number; marker: (typeof SUFFIX_MARKER_SUBSTRINGS)[number] } | null {
+    let best: { index: number; marker: (typeof SUFFIX_MARKER_SUBSTRINGS)[number] } | null = null;
+    for (const marker of SUFFIX_MARKER_SUBSTRINGS) {
+        const index = s.indexOf(marker);
+        if (index === -1) continue;
+        if (!best || index < best.index) best = { index, marker };
+    }
+    return best;
+}
+
+// Item #22: decides whether the redirect target starting at `tokens[idx]` is
+// tainted by a command/process-substitution marker whose actual write
+// destination cannot be statically verified. Returns null when `idx` doesn't
+// point at a recognizable target at all (nothing to evaluate); otherwise
+// returns whether it's tainted plus a best-effort `target` string for
+// reporting (its exact text is not load-bearing — only `tainted` drives
+// behavior).
+function evaluateRedirectTargetTaint(
+    tokens: Token[],
+    idx: number,
+): { tainted: boolean; target: string } | null {
+    const t = tokens[idx];
+    if (t === undefined) return null;
+
+    if (isOpToken(t)) {
+        // `<(...)` process substitution, or the `(` half of an unquoted
+        // `$(...)` split (the preceding `"$"` string case is handled below,
+        // but a bare `(` can also be reached directly here e.g. as the
+        // clobber-hop target of `>| $(...)`).
+        if (t.op === "(" || t.op === "<(") {
+            return { tainted: true, target: t.op === "<(" ? "<(...)" : "$(...)" };
+        }
+        // `>(...)` process substitution: shell-quote splits `>(` into two
+        // adjacent op tokens ({op:">"} then {op:"("}) with nothing between
+        // them — see the module comment above extractOutputRedirectTargets.
+        if (t.op === ">" && isOpToken(tokens[idx + 1]) && (tokens[idx + 1] as OpToken).op === "(") {
+            return { tainted: true, target: ">(...)" };
+        }
+        return null; // some other op in target position — not a marker this check recognizes
+    }
+
+    if (typeof t !== "string") return null;
+
+    // START position: nothing precedes the marker within this target.
+    //   - `t === "$"` is the bare "$" left behind when unquoted `$(` splits
+    //     into a `"$"` string token + `{op:"("}` token with an EMPTY literal
+    //     prefix (the split-with-a-prefix case is handled further below).
+    //   - a flattened string beginning with a backtick/`$(`/`<(`/`>(` at
+    //     index 0 covers the quoted-literal case where the marker survived
+    //     intact inside one token.
+    if (t === "$" || t.startsWith("`") || t.startsWith("$(") || t.startsWith("<(") || t.startsWith(">(")) {
+        return { tainted: true, target: t };
+    }
+
+    // SUFFIX position, unquoted split: this word ends with a bare "$" glued
+    // to preceding literal text, and the very next token is the "(" half of
+    // the same `$(` — i.e. `out_$` + `{op:"("}` is the tokenization of the
+    // literal word `out_$(`. A trailing "$" NOT followed by the "(" op is not
+    // a marker at all (e.g. `file` then a wholly separate `"$"` token later
+    // in the stream never reaches this branch, since it isn't glued to this
+    // target's own token).
+    //
+    // Unconditionally tainted, same as START position, regardless of what
+    // literal text precedes the marker or what the substitution's own source
+    // text contains: the substitution's runtime output can't be resolved
+    // statically, and no static text-pattern check can rule out a
+    // path-traversing result — e.g. `printf '\57..\57.ssh\57authorized_keys'`
+    // computes a leading `/../` sequence at runtime via octal escaping
+    // without a literal `/` or `~` ever appearing in the substitution's own
+    // source text, so a check gated on the presence of such characters (in
+    // either the literal prefix or the substitution's inner content) can
+    // always be defeated. There is no way to distinguish a benign dynamic
+    // filename (`out_$(date +%s)`) from a malicious one using only the
+    // command's static source text, so this policy accepts the usability
+    // cost of blocking both.
+    if (t.endsWith("$") && isOpToken(tokens[idx + 1]) && (tokens[idx + 1] as OpToken).op === "(") {
+        return { tainted: true, target: t };
+    }
+
+    // SUFFIX position, quoted-literal: the marker survived as literal text
+    // inside this single string token. Same unconditional-taint policy as
+    // above — presence of a marker at all is sufficient; the preceding
+    // literal text and the substitution's own source text are no longer
+    // consulted.
+    const found = findEarliestSuffixMarker(t);
+    return { tainted: found !== null, target: t };
+}
+
+// Item #22 (pi-improvement-plan.md): closes a bypass of
+// findBlockedOutputRedirectTarget where the redirect TARGET itself is
+// computed via shell command/process substitution (e.g.
+// `cat payload > $(echo ~/.ssh/authorized_keys)`, or
+// `X=.ssh; cat payload > $(echo ~/$X/authorized_keys)` where no literal
+// protected-path text ever appears in the raw command for
+// extractSubstitutionSpans/findBlockedProtectedFolderReference's raw-substring
+// fallback to catch). Since the actual resolved target can't be known
+// statically, this hard-blocks the moment a substitution marker is found in
+// target position, rather than trying to resolve what the substitution would
+// produce.
+//
+// Scans the same token stream as extractOutputRedirectTargets (same clobber-
+// hop handling for `>|`, same `>&` matching added by item #27), but instead
+// of extracting a plain-string/glob target, evaluates whatever sits in
+// target position via evaluateRedirectTargetTaint above. Returns the first
+// tainted match's best-effort target text, or null if no redirect target is
+// substitution-tainted.
+//
+// For `>&`, no numeric-fd-duplication/close special-casing is needed here
+// (unlike extractOutputRedirectTargets): evaluateRedirectTargetTaint already
+// returns `tainted: false` for a plain string that isn't a substitution
+// marker, so a genuine `>&1`/`>&2`/`>&-` fd-duplication/close form is a no-op
+// pass-through for this loop rather than a false positive. A substitution
+// sitting in `>&`'s target position (e.g. `>& $(printf ...)`) is
+// unresolvable statically — it might resolve to a bare fd number or to a
+// real path — so it is treated the same fail-closed way as a `>`/`>>`
+// substitution target: any substitution marker there is unconditionally
+// tainted.
+export function findSubstitutionTaintedRedirectTarget(command: string): string | null {
+    let tokens: Token[];
+    try {
+        tokens = shellParse(command, SHELL_PARSE_ENV) as Token[];
+    } catch {
+        return null;
+    }
+
+    for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (!isOpToken(t) || (t.op !== ">" && t.op !== ">>" && t.op !== ">&")) continue;
+
+        let idx = i + 1;
+        if (t.op !== ">&") {
+            const maybeClobber = tokens[idx];
+            if (isOpToken(maybeClobber) && maybeClobber.op === "|") {
+                idx += 1; // >| clobber form: hop one further (not applicable to >&)
+            }
+        }
+
+        const result = evaluateRedirectTargetTaint(tokens, idx);
+        if (result?.tainted) return result.target;
+    }
+    return null;
+}
+
 // Item #18: checks every output-redirect target extracted from `command`
 // against the unconditional glob-metacharacter check above, then (for
 // non-glob targets) the same protected-folder / protected-write-only-file
@@ -1244,9 +1431,22 @@ const GLOB_METACHARACTERS = /[*?[\]{}]/;
 // PROTECTED_FOLDER_ENTRIES entry: writing into a protected folder via
 // redirect is never "routine inspection" (the exemption's own rationale),
 // regardless of that flag.
+//
+// Item #22: findSubstitutionTaintedRedirectTarget runs FIRST, ahead of the
+// extractOutputRedirectTargets-based checks below — a substitution-computed
+// target (e.g. `cat payload > >(cat > ~/.ssh/authorized_keys)`) must report
+// kind "substitution-computed" (fired at the outer `>(` marker) rather than
+// whatever kind a flat extractOutputRedirectTargets scan would incidentally
+// find by reaching an inner literal target first.
 export function findBlockedOutputRedirectTarget(
     command: string,
-): { target: string; kind: "protected-folder" | "protected-write-only" | "glob-obfuscated" } | null {
+): {
+    target: string;
+    kind: "protected-folder" | "protected-write-only" | "glob-obfuscated" | "substitution-computed";
+} | null {
+    const taintedTarget = findSubstitutionTaintedRedirectTarget(command);
+    if (taintedTarget !== null) return { target: taintedTarget, kind: "substitution-computed" };
+
     for (const target of extractOutputRedirectTargets(command)) {
         if (GLOB_METACHARACTERS.test(target)) return { target, kind: "glob-obfuscated" };
         if (isProtectedPath(target)) return { target, kind: "protected-folder" };
@@ -1573,6 +1773,10 @@ export default function(pi: ExtensionAPI) {
                           "This cannot be bypassed."
                         : blockedRedirect.kind === "protected-write-only"
                         ? `HARD BLOCKED: command redirects output to protected write-only path "${blockedRedirect.target}". ` +
+                          "This cannot be bypassed."
+                        : blockedRedirect.kind === "substitution-computed"
+                        ? `HARD BLOCKED: command redirects output to "${blockedRedirect.target}", which is computed via shell command/process substitution. ` +
+                          "The actual write destination cannot be statically verified, so this is blocked regardless of what it resolves to. " +
                           "This cannot be bypassed."
                         : `HARD BLOCKED: command redirects output to "${blockedRedirect.target}", which contains shell glob/pattern syntax. ` +
                           "Redirect targets are not permitted to contain glob characters, since they could expand unpredictably to a protected path. " +
