@@ -1174,3 +1174,69 @@ describe("output-redirect bypass — substitution-computed targets already cover
     ).not.toBeNull();
   });
 });
+
+// ── $HOME resolution bug — shellParse(command) is invoked with no explicit
+// `env` argument at any of this file's 3 call sites, so shell-quote's own
+// default behavior (see shell-quote's parse.js: `parse(s, env, opts)` — any
+// key missing from `env` resolves to `""`) collapses every $VAR/${VAR}
+// reference to "" during parsing. `cat payload > $HOME/.ssh/authorized_keys`
+// therefore parses TODAY with $HOME collapsing to "", so the extracted
+// redirect target becomes "/.ssh/authorized_keys" — which does NOT match the
+// protected-path checks' `~`-prefixed or absolute-path forms, silently
+// letting a write to a protected path bypass the hard block.
+//
+// Fix under test (not yet implemented at the time these tests were written):
+// thread a SHELL_PARSE_ENV = { HOME } constant, reusing this file's existing
+// `HOME` constant, as the second argument to all 3 shellParse(command) call
+// sites, so $HOME/${HOME} resolve to the real HOME value while every other
+// env var ($USER, $PWD, $OLDPWD, $NOTHOME, ...) deliberately stays unresolved
+// (collapsing to "" as before) — a narrow allowlist, not a broad env
+// passthrough.
+
+describe("extractOutputRedirectTargets — $HOME resolution (item #18 follow-up)", () => {
+  it("resolves a bare $HOME redirect target to the real HOME value, not a collapsed empty string", () => {
+    expect(
+      extractOutputRedirectTargets("cat payload > $HOME/.ssh/authorized_keys"),
+    ).toEqual([`${HOME}/.ssh/authorized_keys`]);
+  });
+
+  it("resolves a braced ${HOME} redirect target to the real HOME value", () => {
+    expect(
+      extractOutputRedirectTargets("cat payload > ${HOME}/.ssh/authorized_keys"),
+    ).toEqual([`${HOME}/.ssh/authorized_keys`]);
+  });
+
+  it("[control] leaves a non-allowlisted var ($NOTHOME) collapsed to an empty string, same as before the fix — proves this is a narrow HOME-only allowlist, not a broad env passthrough", () => {
+    expect(
+      extractOutputRedirectTargets("cat payload > $NOTHOME/.ssh/authorized_keys"),
+    ).toEqual(["/.ssh/authorized_keys"]);
+  });
+});
+
+describe("findBlockedOutputRedirectTarget — $HOME resolution hard-block regression (item #18 follow-up)", () => {
+  it("blocks a redirect into $HOME/.ssh/authorized_keys (protected-folder kind) once $HOME resolves", () => {
+    const blocked = findBlockedOutputRedirectTarget(
+      "cat payload > $HOME/.ssh/authorized_keys",
+    );
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("protected-folder");
+  });
+
+  it("blocks a redirect into $HOME/.bashrc (protected-write-only kind) once $HOME resolves", () => {
+    const blocked = findBlockedOutputRedirectTarget("cat payload > $HOME/.bashrc");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("protected-write-only");
+  });
+
+  it("[control] does NOT block via $PWD resolution — $PWD deliberately stays unresolved/collapsed, unlike $HOME", () => {
+    expect(
+      findBlockedOutputRedirectTarget("cat payload > $PWD/.ssh/authorized_keys"),
+    ).toBeNull();
+  });
+});
+
+describe("isReadOnlyBashCommand — unaffected by threading env into its shellParse call (non-regression)", () => {
+  it("still classifies `cat $HOME/.ssh/id_rsa` as read-only", () => {
+    expect(isReadOnlyBashCommand("cat $HOME/.ssh/id_rsa")).toBe(true);
+  });
+});

@@ -408,7 +408,7 @@ const MAX_SUBSTITUTION_RECURSION_DEPTH = 5;
 function analyzeBashCommandBase(command: string): Risk | null {
     let tokens: Token[];
     try {
-        tokens = shellParse(command) as Token[];
+        tokens = shellParse(command, SHELL_PARSE_ENV) as Token[];
     } catch {
         // Fallback: shell-quote failed (e.g. heredocs, process substitutions).
         // Run a quick regex scan for known-dangerous patterns rather than
@@ -723,6 +723,26 @@ const HEADLESS_BLOCKED: Array<{ pattern: RegExp; reason: string }> = [
 // These directories are completely off-limits for write operations.
 // No agent, no bypass, no escape hatch. Hard-block always.
 const HOME = process.env.HOME || "/home/rabeta";
+
+// Narrow allowlist passed as the `env` argument to shell-quote's
+// `shellParse(command, env)`. Without an explicit env, shell-quote collapses
+// any `$VAR`/`${VAR}` not present as a key to "" — so `$HOME` in a command
+// would parse to "" instead of the real path, letting redirects like
+// `cat payload > $HOME/.ssh/authorized_keys` slip past the protected-path
+// checks below (the extracted target becomes `/.ssh/authorized_keys`,
+// which doesn't match the real `~/.ssh/authorized_keys`).
+//
+// Only `$HOME` is resolved here because it's the only variable used to
+// construct this file's protected-path constants (PROTECTED_FOLDER_ENTRIES /
+// PROTECTED_WRITE_ONLY_FILES). `$USER`/`$PWD`/`$OLDPWD` are deliberately
+// excluded: nothing in this file constructs protected paths from them, and
+// resolving `$PWD`/`$OLDPWD` risks reflecting this guard process's own
+// possibly-stale cwd rather than the actual executing shell's.
+//
+// Never pass `process.env` directly as the env arg here — that would resolve
+// arbitrary env content (including secrets) into parsed tokens, which can
+// end up embedded in reason strings shown to the model/UI.
+const SHELL_PARSE_ENV: Record<string, string> = { HOME };
 
 // Per-entry bash-layer policy: whether a command that *looks* read-only
 // (see READ_ONLY_CMDS/isReadOnlyBashCommand below) is still allowed to
@@ -1050,7 +1070,7 @@ export function isReadOnlyBashCommand(command: string): boolean {
 
     let tokens: Token[];
     try {
-        tokens = shellParse(command) as Token[];
+        tokens = shellParse(command, SHELL_PARSE_ENV) as Token[];
     } catch {
         // Unparseable command (heredocs, process substitutions, etc.) — can't
         // safely inspect find/fd arguments for mutating primaries/flags, so
@@ -1174,7 +1194,7 @@ export function isReadOnlyBashCommand(command: string): boolean {
 export function extractOutputRedirectTargets(command: string): string[] {
     let tokens: Token[];
     try {
-        tokens = shellParse(command) as Token[];
+        tokens = shellParse(command, SHELL_PARSE_ENV) as Token[];
     } catch {
         return [];
     }
@@ -1526,11 +1546,13 @@ export default function(pi: ExtensionAPI) {
         // best-effort layer, consistent with the existing READ_ONLY_CMDS /
         // compound-command-bypass trade-off already documented for this same mechanism.
         //
-        // The same variable-indirection gap applies to `findBlockedOutputRedirectTarget`
-        // (via `extractOutputRedirectTargets`) below: it also calls `shellParse(command)`
-        // without an `env` argument, so `shell-quote` expands `$HOME` to an empty string
-        // rather than resolving it — `cat payload > $HOME/.ssh/authorized_keys` is not
-        // caught, while the literal and `~`-prefixed forms are.
+        // `findBlockedOutputRedirectTarget` (via `extractOutputRedirectTargets`) below no
+        // longer shares this gap for `$HOME` specifically: both now call
+        // `shellParse(command, SHELL_PARSE_ENV)`, so `$HOME`/`${HOME}` resolve to the
+        // real HOME value and `cat payload > $HOME/.ssh/authorized_keys` is caught, same
+        // as the literal and `~`-prefixed forms. Every other variable (`$USER`, `$PWD`,
+        // `$OLDPWD`, etc.) still collapses to an empty string exactly as before — see
+        // `SHELL_PARSE_ENV`'s comment for why the allowlist stays narrow.
         if (isToolCallEventType("bash", event)) {
             const command = event.input.command as string;
 
