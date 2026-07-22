@@ -771,7 +771,7 @@ export function isProtectedPath(filePath: string): boolean {
     const resolved = resolveRealPathBestEffort(expanded);
     const matchesFolder = (candidate: string) =>
         PROTECTED_FOLDERS.some(
-            (folder) => candidate === folder || candidate.startsWith(folder + "/"),
+            (folder) => candidate === folder || candidate.startsWith(`${folder}/`),
         );
     return matchesFolder(expanded) || matchesFolder(resolved);
 }
@@ -1081,18 +1081,25 @@ export function isReadOnlyBashCommand(command: string): boolean {
     // shell-quote's own parse.js CONTROL regex: ||, &&, ;;, |&, &, ;, |).
     // Redirection operators (>, >>, <, <<<, <&, >&, <() ) are deliberately
     // excluded — they don't start a new command, they redirect the CURRENT
-    // one. NOTE: this does NOT mean redirects are hard-blocked elsewhere.
-    // analyzeBashCommand flags output redirection (>, >>, 2>) as a
-    // promptable "medium" risk, but that is a UI confirmation prompt only —
-    // it is skipped entirely in headless/non-interactive execution when the
-    // `bash-guard-auto-allow` flag is set (the common subagent execution
-    // path; see the tool_call handler below), and tokensToStrings here
-    // strips redirect operators without them ever disqualifying a command
-    // from the read-only exemption. So `cat payload > ~/.ssh/authorized_keys`
-    // style commands are NOT hard-blocked by this protected-path check in
-    // that mode. This is a pre-existing gap (predates this fix, and existed
-    // identically in the old bare-regex classifier) — tracked as a separate
-    // backlog item, not addressed here.
+    // one. analyzeBashCommand still flags output redirection (>, >>, 2>) as
+    // a promptable "medium" risk, but that is a UI confirmation prompt only
+    // — it is skipped entirely in headless/non-interactive execution when
+    // the `bash-guard-auto-allow` flag is set (the common subagent execution
+    // path), and tokensToStrings here strips redirect operators without them
+    // ever disqualifying a command from the read-only exemption. So a
+    // `cat payload > ~/.ssh/authorized_keys` style command is NOT caught by
+    // isReadOnlyBashCommand's own classification, nor by this function's
+    // notion of read-only-ness at all.
+    //
+    // Item #18 (previously a gap tracked here as a separate backlog item):
+    // this is now closed, but NOT by changing isReadOnlyBashCommand or this
+    // split list — findBlockedOutputRedirectTarget (see above) runs as its
+    // own independent check in the unconditional tool_call handler, before
+    // the _isSubagent branch and before the auto-allow-gated handler, and
+    // fires purely off the command's redirect targets regardless of how
+    // isReadOnlyBashCommand classifies the rest of the command. That's what
+    // makes the hard block actually fire in headless/subagent mode, where
+    // the promptable "medium risk" path above never runs.
     //
     // "(" and ")" (subshell grouping) are also excluded from this list on
     // purpose: they're already stripped out of `args` by
@@ -1127,6 +1134,105 @@ export function isReadOnlyBashCommand(command: string): boolean {
     if (segments.length === 0) return false;
 
     return segments.every(isReadOnlySegment);
+}
+
+// Item #18: extracts every static (non-substitution-computed) output-redirect
+// TARGET from a bash command string — the file a `>`/`>>` write would land
+// on — so callers can hard-block a redirect into a protected path even in
+// contexts (headless/subagent mode) where the promptable "medium risk"
+// classification in analyzeBashCommandBase is never surfaced to a user (see
+// the comment on isReadOnlyBashCommand's protected-path check below for why
+// that classifier alone isn't sufficient).
+//
+// Parses with the same shellParse (shell-quote) used elsewhere in this file
+// and flat-scans the resulting token array — no segment splitting on
+// &&/;/|/&, since those are their own separate op tokens that never sit
+// between a redirect op and its target, so chaining/piping/backgrounding
+// can't hide a redirect from this scan. For each `{op:">"}` / `{op:">>"}`
+// token:
+//   - the >| clobber form decomposes into {op:">"} then {op:"|"} then the
+//     target, so a `{op:"|"}` immediately following a redirect op means "hop
+//     one further" rather than "this is the target".
+//   - a plain-string next token is the target; a `{op:"glob", pattern}`
+//     token (shell-quote's representation of a target containing an
+//     unquoted `*`/`?`, e.g. `> ~/.bashr?`) is also a target — its `pattern`
+//     field is the literal glob string, and a real shell would glob-expand
+//     it at execution time, so treating it as a non-target here would
+//     silently let a redirect into a protected path bypass the checks below.
+//     anything else (another op token, or a substitution-boundary token like
+//     the "$"/"("/")" tokens shell-quote emits for a `$(...)` target) is left
+//     alone — resolving a substitution-computed target is deliberately NOT
+//     this function's job, see findBlockedOutputRedirectTarget below.
+//
+// Fd-numbered forms (`2>`) tokenize as a separate leading string ("2")
+// followed by a plain `>` op, so the fd-number never sits between the op and
+// its target — no special-casing needed. `&>`/`&>>` tokenize as {op:"&"}
+// then {op:">"}/{op:">>"} — again no special-casing needed, since this scan
+// matches `>`/`>>` regardless of what precedes them. Fd-duplication
+// (`2>&1`) tokenizes as a distinct `{op:">&"}` op, which this scan naturally
+// excludes since it only matches the exact ops `>` and `>>`.
+export function extractOutputRedirectTargets(command: string): string[] {
+    let tokens: Token[];
+    try {
+        tokens = shellParse(command) as Token[];
+    } catch {
+        return [];
+    }
+
+    const targets: string[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (!isOpToken(t) || (t.op !== ">" && t.op !== ">>")) continue;
+
+        let next = tokens[i + 1];
+        if (isOpToken(next) && next.op === "|") {
+            next = tokens[i + 2]; // >| clobber form: hop one further
+        }
+        if (typeof next === "string") {
+            targets.push(next);
+        } else if (isOpToken(next) && next.op === "glob" && typeof next.pattern === "string") {
+            targets.push(next.pattern);
+        }
+    }
+    return targets;
+}
+
+// Item #18 (round 3, superseding the round 1-2 glob-matching subsystem):
+// rather than trying to determine whether a redirect target's glob pattern
+// WOULD MATCH a specific protected path — an approach that turned out to be
+// open-ended, since each round of fixing one glob syntax form (`*`/`?` suffix,
+// then mid-segment placement) kept surfacing another untested one (POSIX
+// bracket expressions, brace expansion) — hard-block ANY output-redirect
+// target that contains an unquoted shell glob/pattern metacharacter at all,
+// regardless of what it would expand to or whether it matches anything
+// specific. Legitimate redirect targets are essentially never glob patterns
+// in practice (globs are for read/list contexts, not write destinations), so
+// this closes the entire obfuscation class in one fail-closed check instead
+// of chasing individual syntax forms.
+const GLOB_METACHARACTERS = /[*?[\]{}]/;
+
+// Item #18: checks every output-redirect target extracted from `command`
+// against the unconditional glob-metacharacter check above, then (for
+// non-glob targets) the same protected-folder / protected-write-only-file
+// checks already used by findBlockedProtectedFolderReference and the
+// PROTECTED_WRITE_ONLY_FILES/PROTECTED_PATH_PATTERNS loop, independent of
+// whether the rest of the command classifies as read-only — a redirect
+// target is a write regardless of what isReadOnlyBashCommand/isReadOnlySegment
+// think about the command's leading command name.
+//
+// Deliberately ignores allowReadOnlyBashExemption on a matched
+// PROTECTED_FOLDER_ENTRIES entry: writing into a protected folder via
+// redirect is never "routine inspection" (the exemption's own rationale),
+// regardless of that flag.
+export function findBlockedOutputRedirectTarget(
+    command: string,
+): { target: string; kind: "protected-folder" | "protected-write-only" | "glob-obfuscated" } | null {
+    for (const target of extractOutputRedirectTargets(command)) {
+        if (GLOB_METACHARACTERS.test(target)) return { target, kind: "glob-obfuscated" };
+        if (isProtectedPath(target)) return { target, kind: "protected-folder" };
+        if (isProtectedWriteOnlyPath(target)) return { target, kind: "protected-write-only" };
+    }
+    return null;
 }
 
 // Checks whether a bash command textually references a given absolute path,
@@ -1419,8 +1525,39 @@ export default function(pi: ExtensionAPI) {
         // and is not affected by this limitation; this bash-side check is a secondary,
         // best-effort layer, consistent with the existing READ_ONLY_CMDS /
         // compound-command-bypass trade-off already documented for this same mechanism.
+        //
+        // The same variable-indirection gap applies to `findBlockedOutputRedirectTarget`
+        // (via `extractOutputRedirectTargets`) below: it also calls `shellParse(command)`
+        // without an `env` argument, so `shell-quote` expands `$HOME` to an empty string
+        // rather than resolving it — `cat payload > $HOME/.ssh/authorized_keys` is not
+        // caught, while the literal and `~`-prefixed forms are.
         if (isToolCallEventType("bash", event)) {
             const command = event.input.command as string;
+
+            // Item #18: hard-block output-redirect (>, >>) targets that land
+            // inside a protected folder or on a protected write-only path,
+            // independent of isReadOnlyBashCommand's classification and
+            // independent of ctx.hasUI/bash-guard-auto-allow — this runs in
+            // the unconditional handler (before the _isSubagent branch and
+            // before the auto-allow-gated handler further down), so it fires
+            // in headless/subagent mode too, unlike the promptable "medium
+            // risk" redirect check in analyzeBashCommandBase.
+            const blockedRedirect = findBlockedOutputRedirectTarget(command);
+            if (blockedRedirect) {
+                const reason =
+                    blockedRedirect.kind === "protected-folder"
+                        ? `HARD BLOCKED: command redirects output to "${blockedRedirect.target}", which is inside a protected folder. ` +
+                          "These directories are completely off-limits for write operations. " +
+                          "This cannot be bypassed."
+                        : blockedRedirect.kind === "protected-write-only"
+                        ? `HARD BLOCKED: command redirects output to protected write-only path "${blockedRedirect.target}". ` +
+                          "This cannot be bypassed."
+                        : `HARD BLOCKED: command redirects output to "${blockedRedirect.target}", which contains shell glob/pattern syntax. ` +
+                          "Redirect targets are not permitted to contain glob characters, since they could expand unpredictably to a protected path. " +
+                          "This cannot be bypassed.";
+                return { block: true, reason };
+            }
+
             const blockedEntry = findBlockedProtectedFolderReference(command);
             if (blockedEntry) {
                 return {

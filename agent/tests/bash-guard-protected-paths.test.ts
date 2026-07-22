@@ -10,6 +10,8 @@ import {
   findBlockedProtectedFolderReference,
   PROTECTED_PATH_PATTERNS,
   extractSubstitutionSpans,
+  extractOutputRedirectTargets,
+  findBlockedOutputRedirectTarget,
 } from "../extensions/bash-guard/index.ts";
 
 const HOME = process.env.HOME || "/home/rabeta";
@@ -858,5 +860,317 @@ describe("command/process substitution bypass — item #16 regression", () => {
     const spans = extractSubstitutionSpans("cat $(rm -rf");
     expect(spans.length).toBeGreaterThan(0);
     expect(spans.some((s) => s.includes("rm -rf"))).toBe(true);
+  });
+});
+
+// ── output-redirect-target bypass — item #18 regression ─────────────────
+// analyzeBashCommandBase's own comment block (above isReadOnlyBashCommand)
+// documents this exact gap: output redirection is only ever surfaced as a
+// promptable "medium" risk via analyzeBashCommand, and that prompt is SKIPPED
+// entirely in headless/subagent mode (ctx.hasUI is false, or the
+// bash-guard-auto-allow flag is set). Neither findBlockedProtectedFolderReference
+// nor the PROTECTED_WRITE_ONLY_FILES/PROTECTED_PATH_PATTERNS hard-block logic
+// inspects redirect targets at all today, so `cat payload > ~/.ssh/authorized_keys`
+// sails through both the interactive prompt (skipped) and the hard block
+// (never checked) in headless mode — silently overwriting a protected path.
+//
+// extractOutputRedirectTargets/findBlockedOutputRedirectTarget close this by
+// parsing the command with shell-quote and flat-scanning for >/>> operator
+// tokens, taking the following token as the write target (with one extra hop
+// for the >| clobber-form, which decomposes into {op:">"} then {op:"|"} then
+// the target). Dynamic/substitution-computed targets are deliberately left to
+// the pre-existing item #16 mechanism (see the last test in this section).
+
+describe("extractOutputRedirectTargets", () => {
+  it("extracts a simple > redirect target", () => {
+    expect(extractOutputRedirectTargets("cat payload > ~/.ssh/authorized_keys")).toEqual([
+      "~/.ssh/authorized_keys",
+    ]);
+  });
+
+  it("extracts a >> append-form redirect target", () => {
+    expect(extractOutputRedirectTargets("cat payload >> ~/.ssh/authorized_keys")).toEqual([
+      "~/.ssh/authorized_keys",
+    ]);
+  });
+
+  it("extracts a fd-numbered stderr redirect target (2>)", () => {
+    expect(extractOutputRedirectTargets("cat payload 2> ~/.ssh/authorized_keys")).toEqual([
+      "~/.ssh/authorized_keys",
+    ]);
+  });
+
+  it("extracts a combined-form redirect target (&>)", () => {
+    expect(extractOutputRedirectTargets("cat payload &> ~/.ssh/authorized_keys")).toEqual([
+      "~/.ssh/authorized_keys",
+    ]);
+  });
+
+  it("extracts a clobber-form redirect target (>|), requiring the one-extra-hop handling", () => {
+    expect(extractOutputRedirectTargets("cat payload >| ~/.ssh/authorized_keys")).toEqual([
+      "~/.ssh/authorized_keys",
+    ]);
+  });
+
+  it("does not treat fd-duplication (2>&1) as a path write target", () => {
+    expect(extractOutputRedirectTargets("cat payload 2>&1")).toEqual([]);
+  });
+
+  it("extracts multiple independent redirect targets from a single command", () => {
+    expect(extractOutputRedirectTargets("cat file > out.txt 2> err.log")).toEqual([
+      "out.txt",
+      "err.log",
+    ]);
+  });
+
+  it("strips double quotes from the redirect target (tokenizer-stripped before reaching the function)", () => {
+    expect(extractOutputRedirectTargets('cat x > "~/.ssh/authorized_keys"')).toEqual([
+      "~/.ssh/authorized_keys",
+    ]);
+  });
+
+  it("strips single quotes from the redirect target (tokenizer-stripped before reaching the function)", () => {
+    expect(extractOutputRedirectTargets("cat x > '~/.ssh/authorized_keys'")).toEqual([
+      "~/.ssh/authorized_keys",
+    ]);
+  });
+
+  it("fails closed (empty array, no throw) on an unparseable/malformed command string", () => {
+    expect(() => extractOutputRedirectTargets("cat $(rm -rf")).not.toThrow();
+    expect(extractOutputRedirectTargets("cat $(rm -rf")).toEqual([]);
+  });
+});
+
+describe("findBlockedOutputRedirectTarget", () => {
+  it("blocks a simple > redirect into ~/.ssh/authorized_keys (protected-folder kind)", () => {
+    const blocked = findBlockedOutputRedirectTarget("cat payload > ~/.ssh/authorized_keys");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("protected-folder");
+  });
+
+  it("blocks a >> append-form redirect into ~/.ssh/authorized_keys", () => {
+    expect(
+      findBlockedOutputRedirectTarget("cat payload >> ~/.ssh/authorized_keys"),
+    ).not.toBeNull();
+  });
+
+  it("blocks a fd-numbered stderr redirect (2>) into ~/.ssh/authorized_keys", () => {
+    expect(
+      findBlockedOutputRedirectTarget("cat payload 2> ~/.ssh/authorized_keys"),
+    ).not.toBeNull();
+  });
+
+  it("blocks `echo y >> ~/.ssh/authorized_keys` (regression guard for the exact example from the item text)", () => {
+    expect(findBlockedOutputRedirectTarget("echo y >> ~/.ssh/authorized_keys")).not.toBeNull();
+  });
+
+  it("blocks a clobber-form redirect (>|) into ~/.ssh/authorized_keys", () => {
+    expect(
+      findBlockedOutputRedirectTarget("cat payload >| ~/.ssh/authorized_keys"),
+    ).not.toBeNull();
+  });
+
+  it("blocks a combined-form redirect (&>) into ~/.ssh/authorized_keys", () => {
+    expect(
+      findBlockedOutputRedirectTarget("cat payload &> ~/.ssh/authorized_keys"),
+    ).not.toBeNull();
+  });
+
+  it("blocks a redirect into ~/.bashrc (protected-write-only kind)", () => {
+    const blocked = findBlockedOutputRedirectTarget("cat payload > ~/.bashrc");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("protected-write-only");
+  });
+
+  it("blocks a redirect into .git/hooks/pre-commit (protected-write-only kind)", () => {
+    const blocked = findBlockedOutputRedirectTarget("cat payload > .git/hooks/pre-commit");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("protected-write-only");
+  });
+
+  it("blocks a redirect into ~/.gitconfig", () => {
+    expect(findBlockedOutputRedirectTarget("cat payload > ~/.gitconfig")).not.toBeNull();
+  });
+
+  it("blocks a redirect hidden after a chained command (ls ~/.ssh && cat payload > ~/.ssh/authorized_keys)", () => {
+    expect(
+      findBlockedOutputRedirectTarget("ls ~/.ssh && cat payload > ~/.ssh/authorized_keys"),
+    ).not.toBeNull();
+  });
+
+  it("blocks a backgrounded redirect (cat payload > ~/.ssh/authorized_keys &)", () => {
+    expect(
+      findBlockedOutputRedirectTarget("cat payload > ~/.ssh/authorized_keys &"),
+    ).not.toBeNull();
+  });
+
+  it("blocks a multi-redirect command where the first target is already protected", () => {
+    expect(
+      findBlockedOutputRedirectTarget("cat file > ~/.ssh/out.txt 2> ~/.bashrc"),
+    ).not.toBeNull();
+  });
+
+  it("does NOT false-positive on a redirect into an unrelated /tmp path", () => {
+    expect(findBlockedOutputRedirectTarget("cat payload > /tmp/output.txt")).toBeNull();
+  });
+
+  it("does NOT false-positive on `ls ~/.ssh > /tmp/listing.txt` (preserves the documented 'inspect a protected dir, save elsewhere' workflow)", () => {
+    // Key regression guard against a rejected blanket-disqualify design:
+    // referencing a protected path as a READ argument elsewhere in the
+    // command must not itself trigger this check — only the actual redirect
+    // TARGET matters here.
+    expect(findBlockedOutputRedirectTarget("ls ~/.ssh > /tmp/listing.txt")).toBeNull();
+  });
+
+  it("does NOT false-positive on a dynamic benign substitution-based filename", () => {
+    expect(
+      findBlockedOutputRedirectTarget("cat file.txt > out-$(date +%s).log"),
+    ).toBeNull();
+  });
+
+  it("does NOT false-positive when there is no redirect at all (confirms no interference with unrelated existing exemption logic)", () => {
+    expect(findBlockedOutputRedirectTarget("ls ~/.ssh")).toBeNull();
+  });
+});
+
+// ── output-redirect-target bypass — unconditional glob-syntax block
+// (superseding design, item #18 round 3) ─────────────────────────────────
+//
+// The previous approach (rounds 1-2, now removed) tried to determine
+// whether a redirect target's glob pattern WOULD MATCH a specific protected
+// path (globPathSegmentsContainOrEqual / globRedirectTargetMatchesProtected-
+// WriteOnlyFile). That chase turned out to be open-ended: round 1 covered a
+// glob suffix after a protected folder's own segment; round 2 (code-reviewer
+// rejection) found mid-path/mid-pattern glob placement wasn't covered either
+// (`~/.s?h/authorized_keys`, `.g?t/hooks/pre-commit`); and a further
+// adversarial pass found POSIX bracket-expression syntax (`~/.ss[h]/authorized_keys`)
+// bypasses the whole mechanism outright, since shell-quote never tokenizes
+// `[`/`]` as a glob op at all (it stays a plain string token indistinguishable
+// from a literal filename), so `commandReferencesPath`/`globSegmentMatches`
+// (which only recognize `*`/`?`) never even see it as glob syntax to begin
+// with — brace expansion (`{`/`}`) would likely be next.
+//
+// New design (user-confirmed, deliberately conservative): stop trying to
+// resolve what a glob WOULD expand to, and instead hard-block ANY
+// output-redirect target that contains an unquoted-shell-glob/pattern
+// metacharacter at all — `*`, `?`, `[`, `]`, `{`, `}` — regardless of
+// whether it happens to match a specific protected path. Rationale: a
+// legitimate redirect target is essentially never a glob pattern in
+// practice (globs are for read/list contexts, not write destinations), so
+// this closes the entire obfuscation class in one fail-closed check instead
+// of chasing individual syntax forms. This uses a new `kind: "glob-obfuscated"`
+// value, distinct from `"protected-folder"`/`"protected-write-only"`, since
+// it blocks on a different basis (presence of glob syntax in the target, not
+// a specific protected-path match) — it fires even for a glob target that
+// would NOT match any protected path.
+//
+// findBlockedOutputRedirectTarget recognizes `*`/`?`/`[`/`]`/`{`/`}` as
+// blocking signals and reports `kind: "glob-obfuscated"` for any redirect
+// target containing one of them, whether or not the target matches a
+// specific protected path.
+describe("output-redirect-target bypass — unconditional glob-syntax block", () => {
+  it("extractOutputRedirectTargets still captures a redirect target containing a glob char (~/.bashr?) — extraction behavior itself is unchanged by the new design", () => {
+    expect(extractOutputRedirectTargets(`cat payload > ${HOME}/.bashr?`)).toEqual([
+      `${HOME}/.bashr?`,
+    ]);
+  });
+
+  it("[unconditional] blocks a `?`-glob redirect that DOES match a protected-write-only file (~/.bashr?), reporting the new glob-obfuscated kind rather than protected-write-only", () => {
+    const blocked = findBlockedOutputRedirectTarget(`cat payload > ${HOME}/.bashr?`);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("glob-obfuscated");
+  });
+
+  it("[unconditional] blocks a `?`-glob redirect that DOES match a protected folder (~/.ssh/authorized_key?), reporting glob-obfuscated rather than protected-folder", () => {
+    const blocked = findBlockedOutputRedirectTarget(`cat payload > ${HOME}/.ssh/authorized_key?`);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("glob-obfuscated");
+  });
+
+  it("[unconditional] blocks a `*`-glob redirect target that does NOT match any protected path at all (backup-*.txt) — this is the core behavior change: previously this would have been allowed through", () => {
+    const blocked = findBlockedOutputRedirectTarget("cat file > backup-*.txt");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("glob-obfuscated");
+  });
+
+  it("[unconditional] blocks a `?`-glob redirect target that does NOT match any protected path at all (report?.txt)", () => {
+    const blocked = findBlockedOutputRedirectTarget("cat file > report?.txt");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("glob-obfuscated");
+  });
+
+  it("[unconditional] blocks a bracket-expression redirect target that does NOT match any protected path (~/notes/report[1].txt) — non-matching case for the bracket bypass class", () => {
+    const blocked = findBlockedOutputRedirectTarget(`cat file > ${HOME}/notes/report[1].txt`);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("glob-obfuscated");
+  });
+
+  it("[unconditional] blocks a mid-segment glob char INSIDE a protected folder's own segment (~/.s?h/authorized_keys) via the unconditional check, no longer requiring path-specific glob-matching logic", () => {
+    const blocked = findBlockedOutputRedirectTarget(`cat payload > ${HOME}/.s?h/authorized_keys`);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("glob-obfuscated");
+  });
+
+  it("[unconditional] blocks a mid-segment glob char inside .git/hooks (.g?t/hooks/pre-commit)", () => {
+    const blocked = findBlockedOutputRedirectTarget("cat payload > .g?t/hooks/pre-commit");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("glob-obfuscated");
+  });
+
+  it("[unconditional] blocks a glob-suffixed redirect into a FILE-type PROTECTED_FOLDER_ENTRIES entry (~/.npmr?)", () => {
+    const blocked = findBlockedOutputRedirectTarget(`cat payload > ${HOME}/.npmr?`);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("glob-obfuscated");
+  });
+
+  it("[bracket bypass, previously undetected entirely] blocks the reported POSIX bracket-expression repro (~/.ss[h]/authorized_keys) — shell-quote never tokenizes `[`/`]` as glob syntax, so this bypassed BOTH the old glob-matching logic AND commandReferencesPath entirely; the unconditional character-presence check is what finally catches it", () => {
+    const blocked = findBlockedOutputRedirectTarget(`cat payload > ${HOME}/.ss[h]/authorized_keys`);
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("glob-obfuscated");
+  });
+
+  it("[bracket bypass] blocks a `.git`-relative bracket-expression repro (.g[i]t/hooks/pre-commit)", () => {
+    const blocked = findBlockedOutputRedirectTarget("cat payload > .g[i]t/hooks/pre-commit");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("glob-obfuscated");
+  });
+
+  it("[brace bypass, same untested-syntax-form risk as brackets] blocks a brace-expansion redirect target ({.git,foo}/config)", () => {
+    const blocked = findBlockedOutputRedirectTarget("cat payload > {.git,foo}/config");
+    expect(blocked).not.toBeNull();
+    expect(blocked?.kind).toBe("glob-obfuscated");
+  });
+
+  it("does NOT false-positive on a genuinely benign, non-glob redirect target (no *, ?, [, ], {, } anywhere) — confirms the new check doesn't overreach beyond actual glob syntax", () => {
+    expect(findBlockedOutputRedirectTarget("cat payload > /tmp/output.txt")).toBeNull();
+  });
+
+  it("does NOT misidentify fd-duplication (2>&1) as a glob-containing target when a genuine later redirect target is present and benign", () => {
+    // 2>&1 tokenizes as its own distinct {op:">&"} op (see the
+    // extractOutputRedirectTargets comment above) and is never pushed as a
+    // target at all — this guards against a naive re-implementation that
+    // scans raw command text char-by-char instead of the properly extracted
+    // target list, which could otherwise misread the "&1" tail or similar
+    // redirect furniture as pattern syntax.
+    expect(
+      findBlockedOutputRedirectTarget("cat payload 2>&1 > /tmp/output.txt"),
+    ).toBeNull();
+  });
+});
+
+describe("output-redirect bypass — substitution-computed targets already covered by item #16", () => {
+  // Documents that extractOutputRedirectTargets/findBlockedOutputRedirectTarget
+  // deliberately do NOT need to resolve $(...)/`...`/<(...)/>(...) redirect
+  // targets themselves: extractSubstitutionSpans (item #16) already scans the
+  // raw command string for substitution spans and, via
+  // commandReferencesPath/PROTECTED_PATH_PATTERNS.test inside
+  // findBlockedProtectedFolderReference, catches a protected path referenced
+  // from inside a substitution regardless of whether it sits in a redirect
+  // position. This test proves the new item #18 functions don't need to
+  // recurse into substitution spans to cover this case.
+  it("findBlockedProtectedFolderReference already blocks a substitution-computed redirect target", () => {
+    expect(
+      findBlockedProtectedFolderReference("cat a > $(echo ~/.ssh/authorized_keys)"),
+    ).not.toBeNull();
   });
 });
