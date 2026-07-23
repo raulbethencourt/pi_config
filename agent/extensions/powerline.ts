@@ -88,7 +88,7 @@ export function buildStatusLine(
     // 1. Pi icon + Directory
     const dir = basename(ctx.cwd) || ctx.cwd;
     parts.push(
-        theme.fg("error", theme.bold(NERD ? "󰚩  " : "pi ")) +
+        theme.fg("error", theme.bold(NERD ? "󰚩  " : "🤖 ")) +
             theme.bold(theme.fg("accent", dir)),
     );
 
@@ -99,7 +99,7 @@ export function buildStatusLine(
     // 3. Active subagents
     const activeSubagents = getActiveSubagentCount();
     if (activeSubagents > 0) {
-        const label = `${AGENTS_ICON}${activeSubagents} agent${activeSubagents === 1 ? "" : "s"}`;
+        const label = `${AGENTS_ICON} ${activeSubagents} agent${activeSubagents === 1 ? "" : "s"}`;
         parts.push(theme.fg("warning", label));
     }
 
@@ -197,9 +197,11 @@ export default function (pi: ExtensionAPI) {
         activeTui?.requestRender();
     });
 
-    pi.on("session_shutdown", () => {
+    pi.on("session_shutdown", (_event, ctx) => {
         stopSpinner();
         stopGitTimer();
+        ctx.ui.setWidget("starship-status", undefined);
+        ctx.ui.setFooter(undefined);
         activeTui = undefined;
     });
 
