@@ -1,3 +1,5 @@
 Pi agent config at ~/.pi/agent/ has 14 subagents defined in extensions/subagents/agents/*.md, with model and thinking level set in YAML frontmatter (e.g. model: github-copilot/claude-sonnet-4.6, thinking: minimal). <!-- created=2026-07-20, last=2026-07-20 -->
 §
-glm-5.2 planner+code-reviewer+debugger, deepseek-v4-pro security-auditor <!-- created=2026-07-20, last=2026-07-20 -->
+Final subagent model matrix (after cost-optimization iterations): kimi-k3 ($$$) for code-reviewer-deep + security-auditor-deep; glm-5.2 ($$) for planner; kimi-k2.7-code ($$) for worker + refactorer; deepseek-v4-pro ($) for code-reviewer + debugger + security-auditor; qwen3.6-plus ($) for critic + sugar-tester + tester + researcher + doc-writer; deepseek-v4-flash ($) for scout. Pattern: 2 premium / 1 mid / 2 code-specialized / 9 cheap. Thinking levels unchanged from original github-copilot config. <!-- created=2026-07-20, last=2026-07-20 -->
+§
+Git hygiene policy: human-readable memory and config files are versioned; SQLite DBs (sessions.db, lock files), crash-recovery artifacts (*.recovery-*) are gitignored. .gitignore uses agent/** glob patterns to cover nested directories. <!-- created=2026-07-20, last=2026-07-20 -->
