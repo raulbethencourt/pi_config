@@ -1099,8 +1099,8 @@ export function isReadOnlyBashCommand(command: string): boolean {
     //     mutating primaries, so a whole-command check would miss it.
     //   - Backgrounding: `ls ~/.ssh & find ~/.ssh -delete` — same
     //     args[0]-flattening bug as chaining, just via "&" instead of "&&"/
-    //     ";" (code-reviewer REJECT finding — "&" was parsed into its own op
-    //     token by shell-quote but was missing from this split list).
+    //     ";" ("&" parses into its own op token via shell-quote and must be
+    //     included in this split list).
     //
     // The split list below is the full set of shell-quote CONTROL operators
     // that can chain/separate distinct commands (verified against
@@ -1119,7 +1119,7 @@ export function isReadOnlyBashCommand(command: string): boolean {
     //
     // Item #18 (previously a gap tracked here as a separate backlog item):
     // this is now closed, but NOT by changing isReadOnlyBashCommand or this
-    // split list — findBlockedOutputRedirectTarget (see above) runs as its
+    // split list — findBlockedOutputRedirectTarget (see below) runs as its
     // own independent check in the unconditional tool_call handler, before
     // the _isSubagent branch and before the auto-allow-gated handler, and
     // fires purely off the command's redirect targets regardless of how
@@ -1444,12 +1444,14 @@ export function findSubstitutionTaintedRedirectTarget(command: string): string |
 // kind "substitution-computed" (fired at the outer `>(` marker) rather than
 // whatever kind a flat extractOutputRedirectTargets scan would incidentally
 // find by reaching an inner literal target first.
-export function findBlockedOutputRedirectTarget(
-    command: string,
-): {
+type BlockedOutputRedirectTarget = {
     target: string;
     kind: "protected-folder" | "protected-write-only" | "glob-obfuscated" | "substitution-computed";
-} | null {
+};
+
+export function findBlockedOutputRedirectTarget(
+    command: string,
+): BlockedOutputRedirectTarget | null {
     const taintedTarget = findSubstitutionTaintedRedirectTarget(command);
     if (taintedTarget !== null) return { target: taintedTarget, kind: "substitution-computed" };
 
@@ -1772,21 +1774,31 @@ export default function(pi: ExtensionAPI) {
             // risk" redirect check in analyzeBashCommandBase.
             const blockedRedirect = findBlockedOutputRedirectTarget(command);
             if (blockedRedirect) {
-                const reason =
-                    blockedRedirect.kind === "protected-folder"
-                        ? `HARD BLOCKED: command redirects output to "${blockedRedirect.target}", which is inside a protected folder. ` +
-                          "These directories are completely off-limits for write operations. " +
-                          "This cannot be bypassed."
-                        : blockedRedirect.kind === "protected-write-only"
-                        ? `HARD BLOCKED: command redirects output to protected write-only path "${blockedRedirect.target}". ` +
-                          "This cannot be bypassed."
-                        : blockedRedirect.kind === "substitution-computed"
-                        ? `HARD BLOCKED: command redirects output to "${blockedRedirect.target}", which is computed via shell command/process substitution. ` +
-                          "The actual write destination cannot be statically verified, so this is blocked regardless of what it resolves to. " +
-                          "This cannot be bypassed."
-                        : `HARD BLOCKED: command redirects output to "${blockedRedirect.target}", which contains shell glob/pattern syntax. ` +
-                          "Redirect targets are not permitted to contain glob characters, since they could expand unpredictably to a protected path. " +
-                          "This cannot be bypassed.";
+                let reason: string;
+                switch (blockedRedirect.kind) {
+                    case "protected-folder":
+                        reason =
+                            `HARD BLOCKED: command redirects output to "${blockedRedirect.target}", which is inside a protected folder. ` +
+                            "These directories are completely off-limits for write operations. " +
+                            "This cannot be bypassed.";
+                        break;
+                    case "protected-write-only":
+                        reason =
+                            `HARD BLOCKED: command redirects output to protected write-only path "${blockedRedirect.target}". ` +
+                            "This cannot be bypassed.";
+                        break;
+                    case "substitution-computed":
+                        reason =
+                            `HARD BLOCKED: command redirects output to "${blockedRedirect.target}", which is computed via shell command/process substitution. ` +
+                            "The actual write destination cannot be statically verified, so this is blocked regardless of what it resolves to. " +
+                            "This cannot be bypassed.";
+                        break;
+                    default:
+                        reason =
+                            `HARD BLOCKED: command redirects output to "${blockedRedirect.target}", which contains shell glob/pattern syntax. ` +
+                            "Redirect targets are not permitted to contain glob characters, since they could expand unpredictably to a protected path. " +
+                            "This cannot be bypassed.";
+                }
                 return { block: true, reason };
             }
 
