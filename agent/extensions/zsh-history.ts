@@ -12,8 +12,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
-import { Container, fuzzyFilter, Input, matchesKey, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
+import type { SelectItem } from "@mariozechner/pi-tui";
+import { runHistoryPicker, sanitizeForDisplay as sharedSanitizeForDisplay } from "./shared/history-picker.ts";
 
 /**
  * Parse ~/.zsh_history → deduplicated list, most recent first.
@@ -45,6 +45,13 @@ export function parseZshHistory(raw: string): string[] {
 	return commands.reverse();
 }
 
+// Re-exported for existing direct importers (tests/zsh-history.test.ts predates
+// the shared-module extraction). The canonical implementation now lives in
+// ./shared/history-picker.ts, shared with prompt-history/index.ts (which used
+// to hand-duplicate it — pi-improvement-plan item #25, Phase A; consolidated
+// in item #26, Phase B). New code should import from the shared module.
+export const sanitizeForDisplay = sharedSanitizeForDisplay;
+
 export default function (pi: ExtensionAPI) {
 	pi.registerShortcut("ctrl+r", {
 		description: "Search zsh history",
@@ -72,126 +79,17 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const allItems: SelectItem[] = allCommands.map((cmd) => ({ value: cmd, label: cmd }));
+			// `value` stays raw (it's `!`-prefixed and pasted back for execution);
+			// only `label` is sanitized for safe terminal rendering.
+			const allItems: SelectItem[] = allCommands.map((cmd) => ({ value: cmd, label: sanitizeForDisplay(cmd) }));
 
-			const selected = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-				// ── Search input ────────────────────────────────────────────────
-				const input = new Input();
-				input.focused = true;
-				// Prevent Input's built-in submit/escape from firing
-				// (we intercept those keys ourselves before passing to Input)
-				input.onSubmit = () => {};
-				input.onEscape = () => {};
-
-				// ── List ────────────────────────────────────────────────────────
-				const maxVisible = Math.min(allCommands.length, 20);
-				const selectList = new SelectList(allItems, maxVisible, {
-					selectedPrefix: (t) => theme.fg("accent", t),
-					selectedText: (t) => theme.fg("accent", t),
-					description: (t) => theme.fg("muted", t),
-					scrollInfo: (t) => theme.fg("dim", t),
-					noMatch: (t) => theme.fg("warning", t),
-				});
-
-				// ── Filter helper ───────────────────────────────────────────────
-				function applyFilter(query: string) {
-					const filtered = query.trim()
-						? fuzzyFilter(allItems, query, (item) => item.value)
-						: allItems;
-					selectList.filteredItems = filtered;
-					selectList.setSelectedIndex(0);
-				}
-
-				// ── Navigation helpers ──────────────────────────────────────────
-				function moveNext() {
-					const len = Math.max(1, selectList.filteredItems.length);
-					selectList.setSelectedIndex((selectList.selectedIndex + 1) % len);
-				}
-				function movePrev() {
-					const len = Math.max(1, selectList.filteredItems.length);
-					selectList.setSelectedIndex((selectList.selectedIndex - 1 + len) % len);
-				}
-
-				// ── Layout ──────────────────────────────────────────────────────
-				const container = new Container();
-				container.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
-				container.addChild(
-					new Text(
-						" " +
-							theme.fg("accent", theme.bold("zsh history")) +
-							theme.fg("dim", `  ${allCommands.length} entries`),
-						0,
-						0,
-					),
-				);
-				container.addChild(new DynamicBorder((s) => theme.fg("dim", s)));
-				container.addChild(input);
-				container.addChild(new DynamicBorder((s) => theme.fg("dim", s)));
-				container.addChild(selectList);
-				container.addChild(new DynamicBorder((s) => theme.fg("dim", s)));
-				container.addChild(
-					new Text(
-						theme.fg("dim", " tab/shift+tab or ↑↓  •  type to filter  •  enter select  •  esc cancel"),
-						0,
-						0,
-					),
-				);
-				container.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
-
-				return {
-					render: (w) => container.render(w),
-					invalidate: () => container.invalidate(),
-					handleInput: (data) => {
-						// Tab → next
-						if (matchesKey(data, "tab")) {
-							moveNext();
-							tui.requestRender();
-							return;
-						}
-						// Shift+Tab → prev
-						if (matchesKey(data, "shift+tab")) {
-							movePrev();
-							tui.requestRender();
-							return;
-						}
-						// Up arrow → prev
-						if (matchesKey(data, "up")) {
-							movePrev();
-							tui.requestRender();
-							return;
-						}
-						// Down arrow → next
-						if (matchesKey(data, "down")) {
-							moveNext();
-							tui.requestRender();
-							return;
-						}
-						// Enter → confirm
-						if (matchesKey(data, "enter")) {
-							const item = selectList.getSelectedItem();
-							done(item ? item.value : null);
-							return;
-						}
-						// Escape → cancel
-						if (matchesKey(data, "escape")) {
-							done(null);
-							return;
-						}
-						// Everything else → search input
-						const before = input.getValue();
-						input.handleInput(data);
-						const after = input.getValue();
-						if (before !== after) {
-							applyFilter(after);
-						}
-						tui.requestRender();
-					},
-				};
+			await runHistoryPicker({
+				ui: ctx.ui,
+				headerLabel: "zsh history",
+				countNoun: "entries",
+				items: allItems,
+				pasteTransform: (rawValue) => `!${rawValue}`,
 			});
-
-			if (selected !== null) {
-				ctx.ui.setEditorText(`!${selected}`);
-			}
 		},
 	});
 }

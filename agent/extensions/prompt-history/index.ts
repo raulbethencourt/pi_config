@@ -20,8 +20,8 @@
  * custom-UI extension surface.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
-import { Container, fuzzyFilter, Input, matchesKey, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
+import type { SelectItem } from "@mariozechner/pi-tui";
+import { runHistoryPicker, sanitizeForDisplay as sharedSanitizeForDisplay } from "../shared/history-picker.ts";
 import {
 	formatRelativeTime,
 	loadCache,
@@ -37,11 +37,22 @@ import {
 // stays in SelectItem.value for both fuzzy matching and what gets pasted.
 const PREVIEW_MAX_LEN = 120;
 
+// Re-exported for existing direct importers (tests/prompt-history-index.test.ts
+// predates the shared-module extraction). The canonical implementation now
+// lives in ../shared/history-picker.ts, shared with zsh-history.ts (which
+// used to hand-duplicate it — pi-improvement-plan item #25, Phase A;
+// consolidated in item #26, Phase B). New code should import from the shared
+// module.
+export const sanitizeForDisplay = sharedSanitizeForDisplay;
+
 function toSelectItem(entry: PromptHistoryEntry, now: number): SelectItem {
 	return {
+		// `value` stays raw (the full untruncated prompt, pasted back for
+		// editing/resubmission); label/description are sanitized for safe
+		// terminal rendering.
 		value: entry.text,
-		label: toPreviewLabel(entry.text, PREVIEW_MAX_LEN),
-		description: `${formatRelativeTime(entry.timestampMs, now)} · ${entry.workspace}`,
+		label: sanitizeForDisplay(toPreviewLabel(entry.text, PREVIEW_MAX_LEN)),
+		description: sanitizeForDisplay(`${formatRelativeTime(entry.timestampMs, now)} · ${entry.workspace}`),
 	};
 }
 
@@ -75,125 +86,16 @@ export default function (pi: ExtensionAPI) {
 
 			const allItems: SelectItem[] = entries.map((entry) => toSelectItem(entry, now));
 
-			const selected = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-				// ── Search input ────────────────────────────────────────────────
-				const input = new Input();
-				input.focused = true;
-				// Prevent Input's built-in submit/escape from firing
-				// (we intercept those keys ourselves before passing to Input)
-				input.onSubmit = () => {};
-				input.onEscape = () => {};
-
-				// ── List ────────────────────────────────────────────────────────
-				const maxVisible = Math.min(allItems.length, 20);
-				const selectList = new SelectList(allItems, maxVisible, {
-					selectedPrefix: (t) => theme.fg("accent", t),
-					selectedText: (t) => theme.fg("accent", t),
-					description: (t) => theme.fg("muted", t),
-					scrollInfo: (t) => theme.fg("dim", t),
-					noMatch: (t) => theme.fg("warning", t),
-				});
-
-				// ── Filter helper ───────────────────────────────────────────────
-				function applyFilter(query: string) {
-					const filtered = query.trim() ? fuzzyFilter(allItems, query, (item) => item.value) : allItems;
-					selectList.filteredItems = filtered;
-					selectList.setSelectedIndex(0);
-				}
-
-				// ── Navigation helpers ──────────────────────────────────────────
-				function moveNext() {
-					const len = Math.max(1, selectList.filteredItems.length);
-					selectList.setSelectedIndex((selectList.selectedIndex + 1) % len);
-				}
-				function movePrev() {
-					const len = Math.max(1, selectList.filteredItems.length);
-					selectList.setSelectedIndex((selectList.selectedIndex - 1 + len) % len);
-				}
-
-				// ── Layout ──────────────────────────────────────────────────────
-				const container = new Container();
-				container.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
-				container.addChild(
-					new Text(
-						" " +
-							theme.fg("accent", theme.bold("prompt history")) +
-							theme.fg("dim", `  ${allItems.length} prompts`),
-						0,
-						0,
-					),
-				);
-				container.addChild(new DynamicBorder((s) => theme.fg("dim", s)));
-				container.addChild(input);
-				container.addChild(new DynamicBorder((s) => theme.fg("dim", s)));
-				container.addChild(selectList);
-				container.addChild(new DynamicBorder((s) => theme.fg("dim", s)));
-				container.addChild(
-					new Text(
-						theme.fg("dim", " tab/shift+tab or ↑↓  •  type to filter  •  enter select  •  esc cancel"),
-						0,
-						0,
-					),
-				);
-				container.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
-
-				return {
-					render: (w) => container.render(w),
-					invalidate: () => container.invalidate(),
-					handleInput: (data) => {
-						// Tab → next
-						if (matchesKey(data, "tab")) {
-							moveNext();
-							tui.requestRender();
-							return;
-						}
-						// Shift+Tab → prev
-						if (matchesKey(data, "shift+tab")) {
-							movePrev();
-							tui.requestRender();
-							return;
-						}
-						// Up arrow → prev
-						if (matchesKey(data, "up")) {
-							movePrev();
-							tui.requestRender();
-							return;
-						}
-						// Down arrow → next
-						if (matchesKey(data, "down")) {
-							moveNext();
-							tui.requestRender();
-							return;
-						}
-						// Enter → confirm
-						if (matchesKey(data, "enter")) {
-							const item = selectList.getSelectedItem();
-							done(item ? item.value : null);
-							return;
-						}
-						// Escape → cancel
-						if (matchesKey(data, "escape")) {
-							done(null);
-							return;
-						}
-						// Everything else → search input
-						const before = input.getValue();
-						input.handleInput(data);
-						const after = input.getValue();
-						if (before !== after) {
-							applyFilter(after);
-						}
-						tui.requestRender();
-					},
-				};
-			});
-
-			if (selected !== null) {
+			await runHistoryPicker({
+				ui: ctx.ui,
+				headerLabel: "prompt history",
+				countNoun: "prompts",
+				items: allItems,
 				// Paste the full raw prompt text as-is — no "!" prefix (that's
 				// zsh-history.ts's shell-execution convention; a prompt here is
 				// meant to be edited/resubmitted, not executed).
-				ctx.ui.setEditorText(selected);
-			}
+				pasteTransform: (rawValue) => rawValue,
+			});
 		},
 	});
 }
